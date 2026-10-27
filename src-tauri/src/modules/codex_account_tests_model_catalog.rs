@@ -2192,3 +2192,54 @@ multi_agent = true
         let cleared = update_account_instance_access(&old_id, None, None, Some(Vec::new())).unwrap();
         assert!(cleared.api_image_generation_account_models.is_empty());
     }
+
+    #[test]
+    fn api_profile_refresh_keeps_native_speed_capability_catalog() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock().unwrap_or_else(|error| error.into_inner());
+        let env = TestEnvGuard::new("codex-native-speed-refresh");
+        let base_dir = env.home_dir.join("profile");
+        fs::create_dir_all(&base_dir).unwrap();
+        let file_name = crate::modules::codex_native_speed_catalog::FILE_NAME;
+        fs::write(base_dir.join(file_name), r#"{"models":[]}"#).unwrap();
+        fs::write(base_dir.join("config.toml"), format!(
+            "model = 'gpt-6.1-sol'\nservice_tier = 'ultrafast'\nmodel_catalog_json = '{file_name}'\n"
+        )).unwrap();
+        let mut account = CodexAccount::new_api_key(
+            "speed-refresh".into(), "speed@example.com".into(), "test-key".into(),
+            CodexApiProviderMode::OpenaiBuiltin,
+            Some("https://api.openai.com/v1".into()), None, None, Vec::new(),
+        );
+        account.api_sync_model_catalog_to_codex = false;
+        super::sync_or_cleanup_account_model_catalog_for_dir(&base_dir, &account).unwrap();
+        let text = fs::read_to_string(base_dir.join("config.toml")).unwrap();
+        let doc = crate::modules::codex_config_format::read_codex_config_doc_from_str(&text).unwrap();
+        assert_eq!(doc.get("model_catalog_json").and_then(|item| item.as_str()), Some(file_name));
+        let state = super::inspect_experimental_model_catalog(&base_dir, &doc).unwrap();
+        assert!(!state.enabled);
+        assert!(state.conflict.is_none());
+    }
+
+    #[test]
+    fn provider_catalog_sync_replaces_native_speed_reference() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock().unwrap_or_else(|error| error.into_inner());
+        let env = TestEnvGuard::new("codex-speed-to-provider-catalog");
+        let base_dir = env.home_dir.join("profile");
+        fs::create_dir_all(&base_dir).unwrap();
+        let file_name = crate::modules::codex_native_speed_catalog::FILE_NAME;
+        fs::write(base_dir.join(file_name), r#"{"models":[]}"#).unwrap();
+        fs::write(base_dir.join("config.toml"), format!("model_catalog_json = '{file_name}'\n")).unwrap();
+        let mut account = CodexAccount::new_api_key(
+            "provider".into(), "provider@example.com".into(), "test-key".into(),
+            CodexApiProviderMode::Custom, Some("https://example.invalid/v1".into()),
+            None, None, vec!["vendor-model".into()],
+        );
+        account.api_sync_model_catalog_to_codex = true;
+        super::sync_or_cleanup_account_model_catalog_for_dir(&base_dir, &account).unwrap();
+        let text = fs::read_to_string(base_dir.join("config.toml")).unwrap();
+        let doc = crate::modules::codex_config_format::read_codex_config_doc_from_str(&text).unwrap();
+        let reference = doc.get("model_catalog_json").and_then(|item| item.as_str()).unwrap();
+        assert_eq!(reference, super::CODEX_MANAGED_MODEL_CATALOG_FILE);
+        assert!(base_dir.join(reference).is_file());
+    }

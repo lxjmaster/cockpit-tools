@@ -46,7 +46,11 @@ fn api_service_account_slots(
         let mut slots = automatic_api_service_account_model_slots(account);
         if slots.is_empty() && (!account.is_api_key_auth()
             || provider_gateway_wire_api_for_account(account) == "responses") {
-            slots.extend(fallback.iter().map(|model| (model.clone(), model.clone())));
+            slots.extend(fallback.iter().filter(|model| {
+                account.is_api_key_auth()
+                    || codex_account::is_grok_upstream_provider(account)
+                    || native_default_codex_model(model)
+            }).map(|model| (model.clone(), model.clone())));
         }
         slots
     };

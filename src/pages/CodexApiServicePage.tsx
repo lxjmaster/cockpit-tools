@@ -768,6 +768,7 @@ export function useCodexApiServicePageController() {
   const [selectedTimeoutPresetId, setSelectedTimeoutPresetId] =
     useState<TimeoutPresetId>("long_wait");
   const [timeoutPresetNameDraft, setTimeoutPresetNameDraft] = useState("");
+  const [sessionIdentityMappingEnabledDraft, setSessionIdentityMappingEnabledDraft] = useState(true);
   const [sessionAffinityDraft, setSessionAffinityDraft] = useState(true);
   const [sessionAffinityTtlDraft, setSessionAffinityTtlDraft] =
     useState("3600");
@@ -1535,6 +1536,7 @@ export function useCodexApiServicePageController() {
     );
     setAccountModelRuleSelected(new Set());
     setAccountModelRuleBulkText("");
+    setSessionIdentityMappingEnabledDraft(collection?.sessionIdentityMappingEnabled ?? true);
     setSessionAffinityDraft(collection?.sessionAffinity ?? true);
     setSessionAffinityTtlDraft(
       formatSeconds(collection?.sessionAffinityTtlMs ?? 60 * 60 * 1000),
@@ -1565,6 +1567,7 @@ export function useCodexApiServicePageController() {
     collection?.modelAliases,
     collection?.excludedModels,
     collection?.accountModelRules,
+    collection?.sessionIdentityMappingEnabled,
     collection?.sessionAffinity,
     collection?.sessionAffinityTtlMs,
     collection?.responsesWebsocketsEnabled,
@@ -2008,6 +2011,7 @@ export function useCodexApiServicePageController() {
     officialAccountBindings?: Record<string, string>,
     sessionAffinity?: boolean,
     sessionAffinityTtlMs?: number,
+    sessionIdentityMappingEnabled?: boolean,
   ) => {
     const filteredAccountIds =
       accountIds.length === 0
@@ -2045,6 +2049,7 @@ export function useCodexApiServicePageController() {
       sessionAffinityTtlMs,
       imageGenerationAccountPolicies,
       officialAccountBindings,
+      sessionIdentityMappingEnabled,
     );
     setState(next);
     void fetchAccounts().catch((error) => {
@@ -2097,6 +2102,7 @@ export function useCodexApiServicePageController() {
     officialAccountBindings?: Record<string, string>,
     sessionAffinity?: boolean,
     sessionAffinityTtlMs?: number,
+    sessionIdentityMappingEnabled?: boolean,
   ) => {
     setBusy(true);
     setError("");
@@ -2111,6 +2117,7 @@ export function useCodexApiServicePageController() {
         officialAccountBindings,
         sessionAffinity,
         sessionAffinityTtlMs,
+        sessionIdentityMappingEnabled,
       );
       setNotice(t("codex.localAccess.saveSuccess", "API 服务集合已更新"));
     } catch (err) {
@@ -3008,6 +3015,7 @@ export function useCodexApiServicePageController() {
         async () => {
           const next =
             await codexLocalAccessService.updateCodexLocalAccessRoutingOptions({
+              sessionIdentityMappingEnabled: sessionIdentityMappingEnabledDraft,
               sessionAffinity: sessionAffinityDraft,
               sessionAffinityTtlMs: sessionAffinityTtlSeconds * 1000,
               responsesWebsocketsEnabled: responsesWebsocketsEnabledDraft,
@@ -3780,6 +3788,7 @@ export function useCodexApiServicePageController() {
     selectedTimeoutPresetId,
     selectedTimeoutPresetIsCustom,
     serviceTabs,
+    sessionIdentityMappingEnabledDraft,
     sessionAffinityDraft,
     sessionAffinityTtlDraft,
     setAccountModelRuleBulkText,
@@ -3818,6 +3827,7 @@ export function useCodexApiServicePageController() {
     setResponsesWebsocketsEnabledDraft,
     setSelectedModelId,
     setSelectedTimeoutPresetId,
+    setSessionIdentityMappingEnabledDraft,
     setSessionAffinityDraft,
     setSessionAffinityTtlDraft,
     setState,
