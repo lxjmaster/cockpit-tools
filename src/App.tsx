@@ -32,6 +32,7 @@ import { CodexPelicanHost } from './components/codex/pelican/CodexPelicanHost';
 import { AnnouncementHost } from './components/AnnouncementCenter';
 import { TopCenterPromoBanner } from './components/TopCenterPromoBanner';
 import type { QuickSettingsType } from './components/QuickSettingsPopover';
+import { requestCodexRequestLogsNavigation } from './utils/codexRequestLogsNavigation';
 import { isMainWindowNavigablePage, type Page } from './types/navigation';
 import type { TopRightAd } from './types/topRightAd';
 import { useAutoRefresh } from './hooks/useAutoRefresh';
@@ -52,6 +53,7 @@ import { useCodebuddyCnAccountStore } from './stores/useCodebuddyCnAccountStore'
 import { useQoderAccountStore } from './stores/useQoderAccountStore';
 import { useTraeAccountStore } from './stores/useTraeAccountStore';
 import { useWorkbuddyAccountStore } from './stores/useWorkbuddyAccountStore';
+import { useMinimaxCodeAccountStore } from './stores/useMinimaxCodeAccountStore';
 import { useZedAccountStore } from './stores/useZedAccountStore';
 import { useSideNavLayoutStore } from './stores/useSideNavLayoutStore';
 import { usePlatformLayoutStore } from './stores/usePlatformLayoutStore';
@@ -61,12 +63,16 @@ import { useTopRightAdStore } from './stores/useTopRightAdStore';
 import { useSponsorStore } from './stores/useSponsorStore';
 import { useRemoteConfigStore } from './stores/useRemoteConfigStore';
 import type { UpdateCheckResult, UpdateInfo } from './components/UpdateNotification';
+import type {
+  VersionJumpInfo, UpdateRuntimeInfo, UpdateCheckSource,
+  LinuxUpdateProgressPayload, UpdateAction,
+} from './types/updater';
 import type { RemoteUpdatePromptMode } from './types/remoteConfig';
 import type { Update as UpdaterUpdate } from '@tauri-apps/plugin-updater';
 import {
-  parseUpdaterReleaseNotes,
-  resolveUpdaterDownloadUrl,
+  parseUpdaterReleaseNotes, resolveUpdaterDownloadUrl,
 } from './utils/updaterReleaseNotes';
+import { savePendingUpdateNotes } from './services/localUpdateNotes';
 import { FloatingCardWindow } from './pages/FloatingCardWindow';
 import { CodexWakeupConfirmation } from './components/CodexWakeupConfirmation';
 import { initWakeupNotificationListener } from './utils/wakeupNotificationListener';
@@ -99,6 +105,7 @@ import {
 } from './services/workbuddyAutoCheckinService';
 import { prepareCodexLocalAccessForRestart } from './services/codexLocalAccessService';
 import { applyReducedMotion } from './utils/reducedMotion';
+import { initLocalTimeZone } from './utils/localTimeZone';
 import { isCodexInstanceAccountConflict } from './utils/codexInstanceLaunchConflict';
 import {
   applyWebviewUiScale,
@@ -164,9 +171,12 @@ const TraeAccountsPage = lazy(() =>
 const WorkbuddyAccountsPage = lazy(() =>
   import('./pages/WorkbuddyAccountsPage').then((module) => ({ default: module.WorkbuddyAccountsPage })),
 );
+const MinimaxCodeAccountsPage = lazy(() =>
+  import('./pages/MinimaxCodeAccountsPage').then((module) => ({ default: module.MinimaxCodeAccountsPage })),
+);
 const ZedAccountsPage = lazy(() =>
   import('./pages/ZedAccountsPage').then((module) => ({ default: module.ZedAccountsPage })),
-);;
+);
 const WakeupTasksPage = lazy(() =>
   import('./pages/WakeupTasksPage').then((module) => ({ default: module.WakeupTasksPage })),
 );
@@ -234,6 +244,7 @@ const RENDERABLE_PAGE_VALUES: readonly Page[] = [
   'trae-cn',
   'trae-solo-cn',
   'workbuddy',
+  'minimaxcode',
   'zed',
   'instances',
   'wakeup',
@@ -270,6 +281,7 @@ const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> 
   'trae-cn': ['trae-cn', 'trae-suite'],
   'trae-solo-cn': ['trae-solo-cn', 'trae-suite'],
   workbuddy: ['workbuddy'],
+  minimaxcode: ['minimaxcode'],
 };
 
 function normalizePromoTarget(value: string): string {
@@ -394,6 +406,11 @@ interface GeneralConfig extends GeneralConfigTheme, GeneralConfigLanguage {
   trae_cn_app_scan_roots: string;
   trae_solo_cn_app_scan_roots: string;
   workbuddy_app_path: string;
+  minimax_code_app_path: string;
+  minimax_code_auto_refresh_minutes: number;
+  minimax_code_region: string;
+  minimax_code_quota_alert_enabled: boolean;
+  minimax_code_quota_alert_threshold: number;
   zed_app_path: string;
 }
 
@@ -510,38 +527,8 @@ type QuotaAlertPlatform =
   | 'qoder'
   | 'trae'
   | 'workbuddy'
+  | 'minimaxcode'
   | 'zed';
-type UpdateCheckSource = 'auto' | 'manual';
-type UpdateActionState = 'hidden' | 'available' | 'downloading' | 'installing' | 'ready';
-
-type UpdateRuntimeInfo = {
-  platform: string;
-  linux_install_kind: string;
-  linux_managed_install_supported: boolean;
-  updater_target?: string | null;
-};
-
-type LinuxUpdateProgressPhase =
-  | 'download_started'
-  | 'downloading'
-  | 'downloaded'
-  | 'auth_required'
-  | 'installing'
-  | 'completed';
-
-type LinuxUpdateProgressPayload = {
-  version: string;
-  phase: LinuxUpdateProgressPhase;
-  progress?: number | null;
-};
-
-type UpdateAction = {
-  state: UpdateActionState;
-  version: string | null;
-  progress: number;
-  requiresInstall: boolean;
-};
-
 function buildExternalImportDedupeKey(payload: {
   providerId: string;
   page: string;
@@ -620,6 +607,8 @@ function normalizeQuotaAlertPlatform(platform: string | undefined): QuotaAlertPl
     case 'trae-solo-cn':
     case 'trae_solo_cn':
       return 'trae';
+    case 'minimaxcode':
+      return 'minimaxcode';
     case 'zed':
       return 'zed';
     default:
@@ -654,6 +643,8 @@ function getQuotaAlertPlatformLabel(
       return t('nav.qoder', 'Qoder');
     case 'trae':
       return t('nav.trae', 'Trae');
+    case 'minimaxcode':
+      return t('nav.minimaxcode', 'MiniMax Code');
     case 'zed':
       return t('nav.zed', 'Zed');
     default:
@@ -687,6 +678,8 @@ function getQuotaAlertTargetPage(platform: QuotaAlertPlatform): Page {
       return 'trae';
     case 'workbuddy':
       return 'workbuddy';
+    case 'minimaxcode':
+      return 'minimaxcode';
     case 'zed':
       return 'zed';
     default:
@@ -720,6 +713,8 @@ function getQuotaAlertQuickSettingsType(platform: QuotaAlertPlatform): QuickSett
       return 'trae';
     case 'workbuddy':
       return 'workbuddy';
+    case 'minimaxcode':
+      return 'minimaxcode';
     case 'zed':
       return 'zed';
     default:
@@ -875,12 +870,7 @@ function MainApp() {
   const [appLaunchCandidates, setAppLaunchCandidates] = useState<AppLaunchCandidate[]>([]);
   const [appPathActionError, setAppPathActionError] = useState('');
   const [appPathScanError, setAppPathScanError] = useState('');
-  const [versionJumpInfo, setVersionJumpInfo] = useState<{
-    previous_version: string;
-    current_version: string;
-    release_notes: string;
-    release_notes_zh: string;
-  } | null>(null);
+  const [versionJumpInfo, setVersionJumpInfo] = useState<VersionJumpInfo | null>(null);
   const [showVersionJumpNotification, setShowVersionJumpNotification] = useState(false);
   const [updateRuntimeInfo, setUpdateRuntimeInfo] = useState<UpdateRuntimeInfo | null>(null);
   const [updateRuntimeInfoLoaded, setUpdateRuntimeInfoLoaded] = useState(false);
@@ -1080,6 +1070,7 @@ function MainApp() {
     };
 
     void syncLanguageFromConfig();
+    void initLocalTimeZone();
     window.addEventListener('config-updated', syncLanguageFromConfig);
     return () => {
       disposed = true;
@@ -1422,8 +1413,7 @@ function MainApp() {
       current_version: currentVersion,
       latest_version: update.version,
       download_url: resolveUpdaterDownloadUrl(update.version, update.rawJson),
-      release_notes: releaseNotes,
-      release_notes_zh: releaseNotesZh,
+      release_notes: releaseNotes, release_notes_zh: releaseNotesZh,
     };
   }, []);
 
@@ -1856,22 +1846,7 @@ function MainApp() {
             activeUpdateDownloadRef.current = candidate;
 
             const candidateVersion = candidate.version;
-            const { releaseNotes, releaseNotesZh } = parseUpdaterReleaseNotes(candidate.body);
-            await invoke('save_pending_update_notes', {
-              version: candidateVersion,
-              releaseNotes,
-              releaseNotesZh,
-            }).catch((error) => {
-              console.error('[App] Failed to cache shared update notes:', error);
-              writeUpdateLog(
-                'warn',
-                `缓存统一更新说明失败: version=${candidateVersion}, error=${sanitizeUpdaterErrorMessage(error)}`,
-              );
-            });
-            if (updateCancelRequestedRef.current || updateDownloadTaskIdRef.current !== taskId) {
-              throw createUpdaterCanceledError();
-            }
-
+            savePendingUpdateNotes(candidateVersion, candidate.body);
             const trackProgress = createUpdaterDownloadProgress();
             await candidate.download((event) => {
               if (!acceptingProgress || updateCancelRequestedRef.current
@@ -2658,12 +2633,7 @@ function MainApp() {
       try {
         console.log('[StartupPerf][VersionJump] detection started');
         const versionJumpInvokeStartedAt = performance.now();
-        const jumpInfo = await invoke<{
-          previous_version: string;
-          current_version: string;
-          release_notes: string;
-          release_notes_zh: string;
-        } | null>('check_version_jump');
+        const jumpInfo = await invoke<VersionJumpInfo | null>('check_version_jump');
         console.log(
           `[StartupPerf][VersionJump] check_version_jump completed in ${(performance.now() - versionJumpInvokeStartedAt).toFixed(2)}ms; hasJump=${Boolean(jumpInfo)}`,
         );
@@ -2839,6 +2809,9 @@ function MainApp() {
                     } else if (platform === 'workbuddy') {
                       await useWorkbuddyAccountStore.getState().switchAccount(targetAccountId);
                       setPage('workbuddy');
+                    } else if (platform === 'minimaxcode') {
+                      await useMinimaxCodeAccountStore.getState().switchAccount(targetAccountId);
+                      setPage('minimaxcode');
                     } else if (platform === 'zed') {
                       await useZedAccountStore.getState().switchAccount(targetAccountId);
                       setPage('zed');
@@ -3441,7 +3414,9 @@ function MainApp() {
       .then((target) => {
         if (!target) return;
         const page = String(target);
-        if (isMainWindowNavigablePage(page)) {
+        if (requestCodexRequestLogsNavigation(page)) {
+          setPage('codex-api-service');
+        } else if (isMainWindowNavigablePage(page)) {
           setPage(page);
         }
       })
@@ -3455,7 +3430,9 @@ function MainApp() {
 
         listen<string>('tray:navigate', (event) => {
           const target = String(event.payload || '');
-          if (isMainWindowNavigablePage(target)) {
+          if (requestCodexRequestLogsNavigation(target)) {
+            setPage('codex-api-service');
+          } else if (isMainWindowNavigablePage(target)) {
             setPage(target);
           }
         }).then((fn) => { unlisten = fn; });
@@ -3618,6 +3595,7 @@ function MainApp() {
           <UpdateNotification
             key={updateNotificationKey}
             updateInfo={updateNotificationInfo}
+            visible={showUpdateNotification}
             checking={updateNotificationChecking}
             onRestartUpdate={handleApplyPendingUpdate}
             actionState={updateAction.state}
@@ -3992,6 +3970,9 @@ function MainApp() {
           </VisibleBootPage>
           <VisibleBootPage when={page === 'workbuddy'}>
             <WorkbuddyAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'minimaxcode'}>
+            <MinimaxCodeAccountsPage />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'zed'}>
             <ZedAccountsPage />

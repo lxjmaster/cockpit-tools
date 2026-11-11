@@ -1300,11 +1300,6 @@
   transform: rotate(180deg);
 }
 
-html[data-reduced-motion="true"] .codex-api-service-summary-card:hover,
-html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-expanded="true"] .codex-api-service-key-advanced-state svg {
-  transform: none;
-}
-
 .codex-api-service-key-policy {
   display: grid;
   gap: 9px;
@@ -2395,7 +2390,7 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 
 .codex-api-service-log-filters {
   display: grid;
-  grid-template-columns: repeat(7, minmax(120px, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   align-items: end;
   gap: 8px;
   min-width: 0;
@@ -3004,3 +2999,8 @@ html[data-reduced-motion="true"] .codex-api-service-key-advanced-toggle[aria-exp
 .codex-api-custom-model-row label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; font-weight: 600; }
 .codex-api-custom-model-row input { width: 100%; min-width: 0; height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); font: inherit; box-sizing: border-box; }
 @media (max-width: 640px) { .codex-api-custom-model-row { grid-template-columns: minmax(0, 1fr) 32px; } .codex-api-custom-model-row label { grid-column: 1; } .codex-api-custom-model-row > button { grid-column: 2; grid-row: 1 / span 3; align-self: end; } }
+
+.codex-overload-attempt code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

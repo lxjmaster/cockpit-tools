@@ -321,6 +321,21 @@ pub fn load_account_index() -> CodexAccountIndex {
     }
 }
 
+/// Save reset settings against the authoritative index while account membership is stable.
+/// Do not repair/scan/decrypt account details while holding the mutation lock.
+pub(crate) fn with_reset_automation_account_ids<T>(
+    write: impl FnOnce(&[String]) -> Result<T, String>,
+) -> Result<T, String> {
+    let storage_error = || super::codex_reset_automation::message("storageError");
+    let _guard = CODEX_ACCOUNT_MUTATION_LOCK.lock().map_err(|_| storage_error())?;
+    let bytes = fs::read(get_accounts_storage_path())
+        .map_err(|error| format!("{}: {error}", storage_error()))?;
+    let index: CodexAccountIndex = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{}: {error}", storage_error()))?;
+    let ids = index.accounts.into_iter().map(|account| account.id).collect::<Vec<_>>();
+    write(&ids)
+}
+
 fn load_account_index_checked() -> Result<CodexAccountIndex, String> {
     let path = get_accounts_storage_path();
     if !path.exists() {
@@ -1009,9 +1024,23 @@ pub(crate) fn save_account_preserving_egress_proxy(
     let current = load_account_with_summary(&account.id, None)?
         .ok_or_else(|| format!("账号已删除或无法读取，拒绝后台写回: account_id={}", account.id))?;
     let mut merged = account.clone();
+    // Token snapshots may carry an older entitlement. A completed subscription
+    // query remains authoritative for the same workspace, including during a
+    // concurrent quota or official credential write.
+    if current.subscription_query_last_success_at.is_some()
+        && current.subscription_active_until.is_some()
+        && subscription_workspace_unchanged(&current, &merged)
+    {
+        merged.subscription_active_until = current.subscription_active_until.clone();
+        merged.subscription_query_last_attempt_at = current.subscription_query_last_attempt_at;
+        merged.subscription_query_last_success_at = current.subscription_query_last_success_at;
+        merged.subscription_query_next_retry_at = current.subscription_query_next_retry_at;
+        merged.subscription_query_last_error = current.subscription_query_last_error.clone();
+    }
     merged.egress_proxy_url = current.egress_proxy_url;
     merged.egress_proxy_disabled = current.egress_proxy_disabled;
     save_account_with_tombstone_guard(&merged)?;
+    sync_token_subscription_index(current.subscription_active_until.as_deref(), &merged);
     Ok(merged)
 }
 
@@ -1051,9 +1080,8 @@ fn save_account_unchecked(account: &CodexAccount) -> Result<(), String> {
         return Err("API_SERVICE_RUNTIME_ACCOUNT_READ_ONLY".into());
     }
     let path = get_accounts_dir().join(format!("{}.json", &account.id));
-    let content = crate::modules::secure_account_storage::serialize_account_file("codex",
+    crate::modules::secure_account_storage::write_account_preserving_switch_time(&path, "codex",
         &crate::modules::codex_account_proxy::storage_value(account)?)?;
-    write_string_atomic(&path, &content).map_err(|e| format!("写入账号详情失败: {}", e))?;
     Ok(())
 }
 

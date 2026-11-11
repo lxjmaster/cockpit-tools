@@ -15,6 +15,7 @@ import { useQoderAccountStore } from '../stores/useQoderAccountStore';
 import { useZcodeAccountStore } from '../stores/useZcodeAccountStore';
 import { useTraeAccountStore } from '../stores/useTraeAccountStore';
 import { useWorkbuddyAccountStore } from '../stores/useWorkbuddyAccountStore';
+import { useMinimaxCodeAccountStore } from '../stores/useMinimaxCodeAccountStore';
 import { useZedAccountStore } from '../stores/useZedAccountStore';
 import { useSponsorStore } from '../stores/useSponsorStore';
 import { useRemoteConfigStore } from '../stores/useRemoteConfigStore';
@@ -53,7 +54,9 @@ import {
   WorkbuddyAccount,
   getWorkbuddyOfficialQuotaModel,
 } from '../types/workbuddy';
-import { CodexAccount } from '../types/codex';
+import { CodexAccount, getCodexQuotaWindows, isCodexAgentIdentityAccount, isCodexWebSessionAccount } from '../types/codex';
+import type { MinimaxCodeAccount } from '../types/minimaxCode';
+import { getMiniMaxCodeQuotaGroups } from '../utils/minimaxCode/parser';
 import { GitHubCopilotAccount } from '../types/githubCopilot';
 import {
   WindsurfAccount,
@@ -78,7 +81,9 @@ import './DashboardPage.css';
 import apiKeyFunIcon from '../assets/icons/apikey-fun.png';
 import { RobotIcon } from '../components/icons/RobotIcon';
 import { CodexIcon } from '../components/icons/CodexIcon';
+import { requestCodexResetCreditDetails } from '../utils/codexResetCreditNavigation';
 import { CodexResetCreditExpiry } from '../components/CodexResetCreditExpiry';
+import { CodexResetAutomationStatus } from '../components/codex/CodexResetAutomation';
 import { WindsurfIcon } from '../components/icons/WindsurfIcon';
 import { KiroIcon } from '../components/icons/KiroIcon';
 import { CursorIcon } from '../components/icons/CursorIcon';
@@ -87,6 +92,7 @@ import { CodebuddyIcon } from '../components/icons/CodebuddyIcon';
 import { QoderIcon } from '../components/icons/QoderIcon';
 import { ZcodeIcon } from '../components/icons/ZcodeIcon';
 import { WorkbuddyIcon } from '../components/icons/WorkbuddyIcon';
+import { MinimaxCodeIcon } from '../components/icons/MinimaxCodeIcon';
 import { isAccountPlatform, PlatformId, PLATFORM_PAGE_MAP } from '../types/platform';
 import { getPlatformLabel, renderPlatformIcon } from '../utils/platformMeta';
 import { setAntigravityRuntimeTargetFromPlatform } from '../utils/antigravityRuntimeTarget';
@@ -108,6 +114,7 @@ import {
   buildZcodeAccountPresentation,
   buildTraeAccountPresentation,
   buildWorkbuddyAccountPresentation,
+  buildMiniMaxCodeAccountPresentation,
   buildZedAccountPresentation,
   UnifiedAccountPresentation,
   buildWindsurfAccountPresentation,
@@ -274,6 +281,7 @@ function getZedRecommendationScore(account: ZedAccount): { remainingPercent: num
 
 interface DashboardCardCollapseState {
   workbuddy: boolean;
+  minimaxcode: boolean;
 }
 
 type DashboardEntryId = PlatformLayoutEntryId | ApiRelayLayoutEntryId;
@@ -289,6 +297,7 @@ export function DashboardPage({
   const [tagModalState, setTagModalState] = React.useState<{ accountId: string; platform: PlatformId | 'codebuddy_cn'; tags: string[] } | null>(null);
   const [dashboardCardCollapse, setDashboardCardCollapse] = React.useState<DashboardCardCollapseState>({
     workbuddy: false,
+    minimaxcode: false,
   });
 
   const toggleDashboardCardCollapse = useCallback((platform: keyof DashboardCardCollapseState) => {
@@ -344,6 +353,9 @@ export function DashboardPage({
           break;
         case 'workbuddy':
           await useWorkbuddyAccountStore.getState().updateAccountTags(accountId, newTags);
+          break;
+        case 'minimaxcode':
+          await useMinimaxCodeAccountStore.getState().updateAccountTags(accountId, newTags);
           break;
         case 'zed':
           await useZedAccountStore.getState().updateAccountTags(accountId, newTags);
@@ -567,6 +579,13 @@ export function DashboardPage({
   } = useWorkbuddyAccountStore();
 
   const {
+    accounts: minimaxCodeAccounts,
+    currentAccountId: minimaxCodeCurrentId,
+    fetchAccounts: fetchMinimaxCodeAccounts,
+    switchAccount: switchMinimaxCodeAccount,
+  } = useMinimaxCodeAccountStore();
+
+  const {
     accounts: zedAccounts,
     currentAccountId: zedCurrentId,
     fetchAccounts: fetchZedAccounts,
@@ -626,6 +645,7 @@ export function DashboardPage({
       fetchZcodeAccounts,
       fetchTraeAccounts,
       fetchWorkbuddyAccounts,
+      fetchMinimaxCodeAccounts,
     ];
 
     const loadDeferredPlatforms = () => {
@@ -705,7 +725,8 @@ export function DashboardPage({
         qoderAccounts.length +
         zcodeAccounts.length +
         traeAccounts.length +
-        workbuddyAccounts.length,
+        workbuddyAccounts.length +
+        minimaxCodeAccounts.length,
       antigravity: agAccounts.length,
       codex: codexAccounts.length,
       claude: claudeAccounts.length,
@@ -723,8 +744,9 @@ export function DashboardPage({
       trae_cn: traeAccountsByPlatform.trae_cn.length,
       trae_solo_cn: traeAccountsByPlatform.trae_solo_cn.length,
       workbuddy: workbuddyAccounts.length,
+      minimaxcode: minimaxCodeAccounts.length,
     };
-  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, traeAccounts, traeAccountsByPlatform, workbuddyAccounts]);
+  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, traeAccounts, traeAccountsByPlatform, workbuddyAccounts, minimaxCodeAccounts]);
 
   const dashboardAvailableTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -743,6 +765,7 @@ export function DashboardPage({
       ...zcodeAccounts,
       ...traeAccounts,
       ...workbuddyAccounts,
+      ...minimaxCodeAccounts,
     ];
     for (const acc of allAccounts) {
       if (acc.tags) {
@@ -752,7 +775,7 @@ export function DashboardPage({
       }
     }
     return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
-  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, traeAccounts, workbuddyAccounts]);
+  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, traeAccounts, workbuddyAccounts, minimaxCodeAccounts]);
 
 
   // Refresh States
@@ -784,6 +807,7 @@ export function DashboardPage({
     zcode: boolean;
     trae: boolean;
     workbuddy: boolean;
+    minimaxcode: boolean;
   }>({
     ag: false,
     codex: false,
@@ -799,6 +823,7 @@ export function DashboardPage({
     zcode: false,
     trae: false,
     workbuddy: false,
+    minimaxcode: false,
   });
 
   // Refresh Handlers
@@ -1369,6 +1394,22 @@ export function DashboardPage({
     }
   };
 
+  const handleRefreshMinimaxCode = async (accountId: string) => {
+    if (refreshing.has(accountId)) return;
+    setRefreshing((prev) => new Set(prev).add(accountId));
+    try {
+      await useMinimaxCodeAccountStore.getState().refreshToken(accountId);
+    } catch (error) {
+      console.error('Refresh failed:', error);
+    } finally {
+      setRefreshing((prev) => {
+        const next = new Set(prev);
+        next.delete(accountId);
+        return next;
+      });
+    }
+  };
+
   const handleRefreshCodebuddyCard = async () => {
     if (cardRefreshing.codebuddy) return;
     setCardRefreshing((prev) => ({ ...prev, codebuddy: true }));
@@ -1460,6 +1501,21 @@ export function DashboardPage({
       console.error('Card refresh failed:', error);
     } finally {
       setCardRefreshing((prev) => ({ ...prev, workbuddy: false }));
+    }
+  };
+
+  const handleRefreshMinimaxCodeCard = async () => {
+    if (cardRefreshing.minimaxcode) return;
+    setCardRefreshing((prev) => ({ ...prev, minimaxcode: true }));
+    const idsToRefresh = Array.from(new Set([minimaxCodeCurrent?.id, minimaxCodeRecommended?.id].filter(Boolean))) as string[];
+    try {
+      for (const id of idsToRefresh) {
+        await useMinimaxCodeAccountStore.getState().refreshToken(id);
+      }
+    } catch (error) {
+      console.error('Card refresh failed:', error);
+    } finally {
+      setCardRefreshing((prev) => ({ ...prev, minimaxcode: false }));
     }
   };
 
@@ -1561,6 +1617,22 @@ export function DashboardPage({
     }
   };
 
+  const handleSwitchMinimaxCode = async (accountId: string) => {
+    if (switching.has(accountId)) return;
+    setSwitching((prev) => new Set(prev).add(accountId));
+    try {
+      await switchMinimaxCodeAccount(accountId);
+    } catch (error) {
+      console.error('Switch failed:', error);
+    } finally {
+      setSwitching((prev) => {
+        const next = new Set(prev);
+        next.delete(accountId);
+        return next;
+      });
+    }
+  };
+
   // Antigravity Recommendation Logic
   const agRecommended = useMemo(() => {
     if (agAccounts.length <= 1) return null;
@@ -1607,7 +1679,9 @@ export function DashboardPage({
     return others.reduce((prev, curr) => {
       const getScore = (acc: CodexAccount) => {
         if (!acc.quota) return -1;
-        return (acc.quota.hourly_percentage + acc.quota.weekly_percentage) / 2;
+        // Use effective primary/secondary windows instead of absent-window defaults.
+        const windows = getCodexQuotaWindows(acc.quota);
+        return windows.reduce((sum, window) => sum + window.percentage, 0) / windows.length;
       };
       return getScore(curr) > getScore(prev) ? curr : prev;
     });
@@ -1724,6 +1798,11 @@ export function DashboardPage({
   const workbuddyCurrent = useMemo(
     () => resolveDashboardCurrentAccount(workbuddyAccounts, workbuddyCurrentId),
     [workbuddyAccounts, workbuddyCurrentId],
+  );
+
+  const minimaxCodeCurrent = useMemo(
+    () => resolveDashboardCurrentAccount(minimaxCodeAccounts, minimaxCodeCurrentId),
+    [minimaxCodeAccounts, minimaxCodeCurrentId],
   );
 
   const zedCurrent = useMemo(
@@ -2065,6 +2144,46 @@ export function DashboardPage({
       return candidateScore.freshness > bestScore.freshness ? candidate : best;
     });
   }, [workbuddyAccounts, workbuddyCurrent?.id]);
+
+  const minimaxCodeRecommended = useMemo(() => {
+    if (minimaxCodeAccounts.length <= 1) return null;
+    const currentId = minimaxCodeCurrent?.id;
+    const others = minimaxCodeAccounts.filter((a) => a.id !== currentId);
+    if (others.length === 0) return null;
+
+    const getScore = (account: MinimaxCodeAccount) => {
+      const groups = getMiniMaxCodeQuotaGroups(
+        account,
+        t as (key: string, defaultValue?: string) => string,
+      );
+      const baseResources = groups
+        .flatMap((group) => group.items)
+        .filter((r) => r.total > 0 || r.remain > 0);
+
+      let avgRemainPercent = -1;
+      if (baseResources.length > 0) {
+        const totalRemainPercent = baseResources.reduce((sum, r) => {
+          const pct = r.remainPercent ?? (r.total > 0 ? Math.max(0, (r.remain / r.total) * 100) : 0);
+          return sum + pct;
+        }, 0);
+        avgRemainPercent = totalRemainPercent / baseResources.length;
+      }
+
+      return {
+        remaining: avgRemainPercent,
+        freshness: account.last_used || account.created_at || 0,
+      };
+    };
+
+    return others.reduce((best, candidate) => {
+      const bestScore = getScore(best);
+      const candidateScore = getScore(candidate);
+      if (candidateScore.remaining !== bestScore.remaining) {
+        return candidateScore.remaining > bestScore.remaining ? candidate : best;
+      }
+      return candidateScore.freshness > bestScore.freshness ? candidate : best;
+    });
+  }, [minimaxCodeAccounts, minimaxCodeCurrent?.id, t]);
 
   const zedRecommended = useMemo(() => {
     if (zedAccounts.length <= 1) return null;
@@ -2440,10 +2559,15 @@ export function DashboardPage({
       isRefreshing: refreshing.has(account.id),
       isSwitching: false,
       maxMetrics: 4,
-      extraContent: !isCodexApiKeyAccount(account) && (account.quota?.reset_credits_available ?? 0) > 0 ? (
+      extraContent: !isCodexApiKeyAccount(account) ? (
         <div className="account-mini-reset-credits">
+          {!isCodexAgentIdentityAccount(account) && <button type="button" className={`codex-reset-credit-pill ${(account.quota?.reset_credits_available ?? 0) > 0 ? 'is-available' : 'is-unavailable'}`}
+            onClick={() => { requestCodexResetCreditDetails(account.id); onNavigate('codex'); }}>
+            <RotateCw size={13} />{typeof account.quota?.reset_credits_available === 'number' ? t('codex.quota.resetCredits', { count: account.quota.reset_credits_available }) : t('codex.quota.resetCreditDetailsTitle')}
+            {!isCodexWebSessionAccount(account) && <CodexResetAutomationStatus accountId={account.id} />}
+          </button>}
           <CodexResetCreditExpiry key={account.id} accountId={account.id} quota={account.quota}
-            disabled={refreshing.has(account.id)} onClick={() => onNavigate('codex')} />
+            disabled={refreshing.has(account.id)} onClick={() => { requestCodexResetCreditDetails(account.id); onNavigate('codex'); }} />
         </div>
       ) : undefined,
       onEditTags: () => setTagModalState({ accountId: account.id, platform: 'codex', tags: account.tags || [] }),
@@ -2670,6 +2794,20 @@ export function DashboardPage({
     });
   };
 
+  const renderMinimaxCodeAccountContent = (account: MinimaxCodeAccount | null) => {
+    if (!account) return <div className="empty-slot">{t('dashboard.noAccount', '无账号')}</div>;
+
+    const presentation = buildMiniMaxCodeAccountPresentation(account, t);
+    return renderUnifiedAccountCard({
+      presentation,
+      onRefresh: () => handleRefreshMinimaxCode(account.id),
+      onSwitch: () => handleSwitchMinimaxCode(account.id),
+      isRefreshing: refreshing.has(account.id),
+      isSwitching: switching.has(account.id),
+      onEditTags: () => setTagModalState({ accountId: account.id, platform: 'minimaxcode', tags: account.tags || [] }),
+    });
+  };
+
   const platformCounts: Record<PlatformId, number> = {
     antigravity: stats.antigravity,
     antigravity_ide: stats.antigravity,
@@ -2691,6 +2829,7 @@ export function DashboardPage({
     trae_cn: stats.trae_cn,
     trae_solo_cn: stats.trae_solo_cn,
     workbuddy: stats.workbuddy,
+    minimaxcode: stats.minimaxcode,
   };
 
   const entryCounts = useMemo(() => {
@@ -3498,6 +3637,65 @@ export function DashboardPage({
           </div>
 
           <button className="card-footer-action" onClick={() => onNavigate('workbuddy')}>
+            {t('dashboard.viewAllAccounts', '查看所有账号')}
+          </button>
+        </div>
+      );
+    }
+
+    if (platformId === 'minimaxcode') {
+      const minimaxCodeCollapsed = dashboardCardCollapse.minimaxcode;
+      return (
+        <div
+          className={`main-card windsurf-card main-card-collapsible ${minimaxCodeCollapsed ? 'main-card-collapsed' : ''}`}
+          key={platformId}
+        >
+          <div className="main-card-header">
+            <div className="header-title">
+              <MinimaxCodeIcon style={{ width: 18, height: 18 }} />
+              <h3>{getPlatformLabel(platformId, t)}</h3>
+            </div>
+            <div className="header-action-group">
+              <button
+                className="header-action-btn"
+                onClick={handleRefreshMinimaxCodeCard}
+                disabled={cardRefreshing.minimaxcode}
+                title={t('common.refresh', '刷新')}
+              >
+                <RotateCw size={14} className={cardRefreshing.minimaxcode ? 'loading-spinner' : ''} />
+                <span>{t('common.refresh', '刷新')}</span>
+              </button>
+              {renderHideCardButton(platformId)}
+              <button
+                className="header-action-btn header-collapse-btn"
+                onClick={() => toggleDashboardCardCollapse('minimaxcode')}
+                title={minimaxCodeCollapsed ? t('common.expand', '展开') : t('common.collapse', '收起')}
+                aria-label={minimaxCodeCollapsed ? t('common.expand', '展开') : t('common.collapse', '收起')}
+              >
+                <ChevronDown size={14} className={`collapse-arrow ${minimaxCodeCollapsed ? 'collapsed' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+          <div className="split-content">
+            <div className="split-half current-half">
+              <span className="half-label"><CheckCircle2 size={12} /> {t('dashboard.current', '当前账户')}</span>
+              {renderMinimaxCodeAccountContent(minimaxCodeCurrent)}
+            </div>
+
+            <div className="split-divider"></div>
+
+            <div className="split-half recommend-half">
+              <span className="half-label"><Sparkles size={12} /> {t('dashboard.recommended', '推荐账号')}</span>
+              {minimaxCodeRecommended ? (
+                renderMinimaxCodeAccountContent(minimaxCodeRecommended)
+              ) : (
+                <div className="empty-slot-text">{t('dashboard.noRecommendation', '暂无更好推荐')}</div>
+              )}
+            </div>
+          </div>
+
+          <button className="card-footer-action" onClick={() => onNavigate('minimaxcode')}>
             {t('dashboard.viewAllAccounts', '查看所有账号')}
           </button>
         </div>

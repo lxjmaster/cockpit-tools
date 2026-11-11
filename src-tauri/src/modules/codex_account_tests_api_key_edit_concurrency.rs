@@ -121,6 +121,7 @@ fn api_key_edit_parallel_credentials_preserve_all_rotated_accounts() {
                         None,
                         None,
                         None,
+                        None,
                         Some(n % 2 == 0),
                     )
                     .unwrap()
@@ -234,7 +235,7 @@ fn api_key_edit_shared_destination_cannot_overwrite_another_account() {
                         None,
                         None,
                         None,
-                        None,
+                        None, None,
                     )
                 })
             })
@@ -281,7 +282,7 @@ fn api_key_edit_same_account_keeps_service_sync_with_its_credential_snapshot() {
                     Some(CodexApiProviderMode::Custom), Some("fixture".into()),
                     Some("Fixture".into()), vec![format!("model-{n}")],
                     Some(false), Some("responses".into()), false, false,
-                    HashMap::new(), None, Some(format!("edit-{n}")), None, Some(n % 2 == 0),
+                    HashMap::new(), None, Some(format!("edit-{n}")), None, None, Some(n % 2 == 0),
                 ).unwrap()
             })
         }).collect::<Vec<_>>();
@@ -300,7 +301,7 @@ fn api_key_edit_same_account_keeps_service_sync_with_its_credential_snapshot() {
         &saved.id, saved.openai_api_key.clone().unwrap(), saved.api_base_url.clone(),
         Some(CodexApiProviderMode::Custom), saved.api_provider_id.clone(), saved.api_provider_name.clone(),
         saved.api_model_catalog.clone(), None, Some("responses".into()), false, false,
-        HashMap::new(), None, None, None, None,
+        HashMap::new(), None, None, None, None, None,
     ).unwrap();
     assert_eq!(unchanged.api_sync_model_catalog_to_api_service, saved.api_sync_model_catalog_to_api_service);
 }

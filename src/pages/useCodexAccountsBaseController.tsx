@@ -1,3 +1,4 @@
+import { CODEX_RESET_CREDIT_DETAILS_REQUEST, getPendingCodexResetCreditDetails, clearPendingCodexResetCreditDetails } from '../utils/codexResetCreditNavigation';
 import { prepareCodexServiceJoins } from "../utils/codexServiceJoin";
 import { chatGptPlanErrorKey, listChatGptPlanAccounts } from "../services/chatgptPlanService";
 import { implicitCodexServiceAccountIds } from "../utils/chatgptPlanOverview";
@@ -186,7 +187,6 @@ export function useCodexAccountsBaseController() {
       string | null
     >(null);
     const [localAccessRefreshing, setLocalAccessRefreshing] = useState(false);
-    const [localAccessPortKilling, setLocalAccessPortKilling] = useState(false);
     const [localAccessSidecarRestarting, setLocalAccessSidecarRestarting] =
       useState(false);
     const [showLocalAccessHideConfirm, setShowLocalAccessHideConfirm] =
@@ -380,7 +380,6 @@ export function useCodexAccountsBaseController() {
       title?: string;
       summary?: string;
       reauthorizeAccountId?: string;
-      clearClientAuthObservationAccountId?: string;
       message: string;
     } | null>(null);
     const [editingAccountNoteId, setEditingAccountNoteId] = useState<
@@ -2159,6 +2158,20 @@ export function useCodexAccountsBaseController() {
       [loadResetCreditConfirmSnapshot, setResetCreditConfirmError],
     );
 
+    useEffect(() => {
+      const openRequestedDetails = () => {
+        const id = getPendingCodexResetCreditDetails();
+        const account = id ? accounts.find(account => account.id === id) : undefined;
+        if (!account) return;
+        clearPendingCodexResetCreditDetails();
+        setActiveTab('overview');
+        openResetCreditConfirmModal(account);
+      };
+      openRequestedDetails();
+      window.addEventListener(CODEX_RESET_CREDIT_DETAILS_REQUEST, openRequestedDetails);
+      return () => window.removeEventListener(CODEX_RESET_CREDIT_DETAILS_REQUEST, openRequestedDetails);
+    }, [accounts, openResetCreditConfirmModal]);
+
     const closeResetCreditConfirmModal = useCallback(() => {
       if (resettingResetCreditAccountId) return;
       resetCreditConfirmRequestSeqRef.current += 1;
@@ -2191,7 +2204,7 @@ export function useCodexAccountsBaseController() {
         try {
           await refreshQuota(account.id);
           setMessage({
-            text: t("codex.quota.resetCreditConsumed", "已重置 5 小时额度"),
+            text: t("codex.quota.resetCreditConsumed", "已重置额度"),
           });
           setResetCreditConfirmAccountId(null);
         } catch (error) {
@@ -2792,7 +2805,6 @@ export function useCodexAccountsBaseController() {
     localAccessKeyVisible,
     localAccessLaunchCurrent,
     localAccessModalMode,
-    localAccessPortKilling,
     localAccessRefreshing,
     localAccessSaving,
     localAccessSidecarRestarting,
@@ -2905,7 +2917,6 @@ export function useCodexAccountsBaseController() {
     setLocalAccessKeyVisible,
     setLocalAccessLaunchCurrent,
     setLocalAccessModalMode,
-    setLocalAccessPortKilling,
     setLocalAccessRefreshing,
     setLocalAccessSaving,
     setLocalAccessSidecarRestarting,

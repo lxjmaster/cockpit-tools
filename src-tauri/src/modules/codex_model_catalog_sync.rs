@@ -11,13 +11,14 @@ const MODEL_CATALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const PINNED_MODEL_IDS: &[&str] = &[
     "gpt-6.1-sol",
     "gpt-6-astra",
+    "gpt-6.1-terra",
     "gpt-6-sol",
     "gpt-6-luna",
-    "gpt-5.6-sol",
 ];
 
 pub fn start_background_sync() {
     tauri::async_runtime::spawn(async {
+        crate::modules::codex_model_catalog::initialize().await;
         let mut pending_profiles = false;
         refresh_once(&mut pending_profiles).await;
         let mut interval = tokio::time::interval(MODEL_CATALOG_REFRESH_INTERVAL);
@@ -88,7 +89,7 @@ async fn refresh_once(pending_profiles: &mut bool) {
                 continue;
             }
         };
-        match crate::modules::codex_protocol::replace_codex_client_model_catalog(catalog) {
+        match crate::modules::codex_model_catalog::replace(catalog) {
             Ok(changed) => {
                 if !changed && !*pending_profiles {
                     return;
@@ -131,7 +132,7 @@ fn merge_pinned_models(mut catalog: Value) -> Result<Value, String> {
             return Err(format!("duplicate model slug: {}", slug));
         }
     }
-    let fallback = crate::modules::codex_protocol::embedded_codex_client_model_catalog();
+    let fallback = crate::modules::codex_model_catalog::embedded();
     let fallback_models = fallback
         .get("models")
         .and_then(Value::as_array)
@@ -206,7 +207,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|model| model["slug"] == "gpt-5.6-sol"));
+            .any(|model| model["slug"] == "gpt-6.1-sol"));
         assert!(merged["model_overrides"]
             .as_array()
             .unwrap()

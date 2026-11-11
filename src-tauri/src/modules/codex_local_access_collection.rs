@@ -22,12 +22,26 @@ fn request_ordered_account_ids(
 }
 
 fn allocate_random_local_port(bind_host: &str) -> Result<u16, String> {
+    allocate_random_local_port_excluding(bind_host, None)
+}
+
+fn allocate_random_local_port_excluding(
+    bind_host: &str,
+    excluded_port: Option<u16>,
+) -> Result<u16, String> {
     let listener =
         StdTcpListener::bind((bind_host, 0)).map_err(|e| format!("分配本地接入端口失败: {}", e))?;
-    listener
+    let port = listener
         .local_addr()
         .map(|addr| addr.port())
-        .map_err(|e| format!("读取本地接入端口失败: {}", e))
+        .map_err(|e| format!("读取本地接入端口失败: {}", e))?;
+    if Some(port) == excluded_port {
+        // Keep the first listener alive while the OS chooses a different port.
+        let replacement = allocate_random_local_port(bind_host);
+        drop(listener);
+        return replacement;
+    }
+    Ok(port)
 }
 
 fn configured_initial_local_access_port() -> Option<u16> {
@@ -98,7 +112,7 @@ fn load_collection_for_runtime_from_path(
         return Ok(None);
     };
     if !parsed.native_gateway_default_migrated
-        || parsed.gateway_mode == CodexLocalAccessGatewayMode::Legacy
+        || parsed.gateway_mode != CodexLocalAccessGatewayMode::Native
     {
         // Only cold runtime initialization may migrate. Catalog and import reads
         // must not modify the configuration underlying their revision snapshots.
@@ -116,7 +130,7 @@ fn migrate_native_gateway_default_on_disk(
         let collection: CodexLocalAccessCollection =
             serde_json::from_str(current).map_err(|error| error.to_string())?;
         let content = if !collection.native_gateway_default_migrated
-            || collection.gateway_mode == CodexLocalAccessGatewayMode::Legacy
+            || collection.gateway_mode != CodexLocalAccessGatewayMode::Native
         {
             native_patch_mode(current, CodexLocalAccessGatewayMode::Native)?
         } else {
@@ -139,6 +153,8 @@ fn save_collection_to_path(
 ) -> Result<(), String> {
     update_string_atomic(path, |current| {
         let mut next = collection.clone();
+        next.gateway_mode = CodexLocalAccessGatewayMode::Native;
+        next.native_gateway_default_migrated = true;
         next.image_generation_main_model =
             normalize_image_generation_main_model(next.image_generation_main_model.clone())
                 .unwrap_or(None);
@@ -188,18 +204,9 @@ fn save_collection_to_path(
                         .get("nativeGatewayDefaultMigrated")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
-                    // Only the engine-switch transaction owns this field. An older stats or
-                    // settings snapshot must never silently switch the service back.
-                    if let Some(mode) = current
-                        .get("gatewayMode")
-                        .cloned()
-                        .and_then(|value| {
-                            serde_json::from_value::<CodexLocalAccessGatewayMode>(value).ok()
-                        })
-                        .filter(|mode| *mode != CodexLocalAccessGatewayMode::Legacy)
-                    {
-                        next.gateway_mode = mode;
-                    }
+                    // Stale settings and statistics must never restore the retired engine.
+                    next.gateway_mode = CodexLocalAccessGatewayMode::Native;
+                    next.native_gateway_default_migrated = true;
                     // Ordinary full-snapshot writers do not own the image model directory.
                     // The dedicated field transaction alone can add/delete/restore a model.
                     if current.get("imageGenerationModels").is_some() {
@@ -217,6 +224,7 @@ fn save_collection_to_path(
                             .map(str::to_owned),
                     )
                     .unwrap_or(None);
+                    next.continuous_overload_retry = current.get("continuousOverloadRetry").and_then(Value::as_bool).unwrap_or(false);
                     next.request_payload_logging = current
                         .get("requestPayloadLogging")
                         .and_then(Value::as_bool)
@@ -235,6 +243,17 @@ fn save_collection_to_path(
                     }
                     if let Some(updated_at) = current.get("updatedAt").and_then(Value::as_i64) {
                         next.updated_at = next.updated_at.max(updated_at);
+                    }
+                    if let Some(keys) = current.get("apiKeys").and_then(Value::as_array) {
+                        for key in &mut next.api_keys {
+                            if let Some(previous) = keys.iter().find(|value| value["id"] == key.id) {
+                                let previous: CodexLocalAccessApiKey = serde_json::from_value(previous.clone())
+                                    .map_err(|error| format!("Cannot preserve API key accounting: {error}"))?;
+                                key.token_used = key.token_used.max(previous.token_used);
+                                merge_key_budget_usage(&mut key.budget_usage, &previous.budget_usage);
+                                if previous.updated_at > key.updated_at { key.budget = previous.budget; }
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -593,6 +612,7 @@ fn replace_stats_window_if_more_complete(
 
 fn ensure_stats_maintenance_started() {
     ensure_request_log_error_maintenance_started();
+    ensure_remote_analytics_started();
     if GATEWAY_STATS_MAINTENANCE_COMPLETED.load(Ordering::SeqCst) {
         return;
     }
@@ -2075,6 +2095,7 @@ async fn ensure_runtime_loaded_without_start_with_profile_restore(
                 responses_websockets_enabled: false,
                 max_retry_credentials: 0,
                 max_retry_interval_ms: DEFAULT_MAX_RETRY_INTERVAL_MS,
+                continuous_overload_retry: false,
                 timeouts: CodexLocalAccessTimeouts::default(),
                 active_timeout_preset_id: "long_wait".to_string(),
                 timeout_presets: Vec::new(),

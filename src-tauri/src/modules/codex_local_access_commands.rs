@@ -46,6 +46,7 @@ fn new_local_access_collection() -> Result<CodexLocalAccessCollection, String> {
         responses_websockets_enabled: false,
         max_retry_credentials: 0,
         max_retry_interval_ms: DEFAULT_MAX_RETRY_INTERVAL_MS,
+        continuous_overload_retry: false,
         timeouts: CodexLocalAccessTimeouts::default(),
         active_timeout_preset_id: BUILTIN_TIMEOUT_PRESET_LONG_WAIT_ID.to_string(),
         timeout_presets: Vec::new(),
@@ -781,12 +782,7 @@ pub async fn update_local_access_upstream_proxy_config(
     snapshot_state().await
 }
 
-pub async fn update_local_access_gateway_mode(
-    gateway_mode: CodexLocalAccessGatewayMode,
-) -> Result<CodexLocalAccessState, String> {
-    switch_native_aware_gateway(gateway_mode).await?;
-    snapshot_state().await
-}
+
 
 pub async fn update_local_access_debug_logs(
     debug_logs: bool,
@@ -1291,6 +1287,15 @@ pub async fn set_local_access_api_key_account_priority(
 }
 
 pub async fn update_local_access_api_key(
+    api_key_id: String, label: Option<String>, enabled: Option<bool>, model_prefix: Option<String>,
+    allowed_models: Option<Vec<String>>, excluded_models: Option<Vec<String>>, token_limit: Option<u64>,
+    account_ids: Option<Vec<String>>, inherit_account_pool: Option<bool>,
+) -> Result<CodexLocalAccessState, String> {
+    update_local_access_api_key_with_budget(api_key_id, label, enabled, model_prefix, allowed_models,
+        excluded_models, token_limit, account_ids, inherit_account_pool, None).await
+}
+
+pub async fn update_local_access_api_key_with_budget(
     api_key_id: String,
     label: Option<String>,
     enabled: Option<bool>,
@@ -1300,6 +1305,7 @@ pub async fn update_local_access_api_key(
     token_limit: Option<u64>,
     account_ids: Option<Vec<String>>,
     inherit_account_pool: Option<bool>,
+    budget: Option<CodexApiKeyBudget>,
 ) -> Result<CodexLocalAccessState, String> {
     ensure_runtime_loaded_without_start().await?;
     let (maybe_collection, historical_token_used) = {
@@ -1334,6 +1340,10 @@ pub async fn update_local_access_api_key(
     )?;
     if let Some(label) = label {
         collection.api_keys[index].label = normalize_api_key_label(Some(label.as_str()), "API Key");
+    }
+    if let Some(budget) = budget {
+        validate_key_budget(&budget)?;
+        collection.api_keys[index].budget = budget;
     }
     if let Some(enabled) = enabled {
         collection.api_keys[index].enabled = enabled;
@@ -1557,41 +1567,29 @@ pub async fn restart_local_access_sidecar() -> Result<CodexLocalAccessState, Str
     snapshot_state().await
 }
 
-pub async fn kill_local_access_port_processes() -> Result<CodexLocalAccessPortCleanupResult, String>
-{
-    if let Err(err) = ensure_runtime_loaded_without_start().await {
-        logger::log_codex_api_warn(&format!(
-            "[CodexLocalAccess] 清理端口前加载配置失败: {}",
-            err
-        ));
-        return Err(err);
-    }
-
+pub async fn kill_local_access_port_processes() -> Result<CodexLocalAccessPortCleanupResult, String> {
+    ensure_runtime_loaded_without_start().await?;
+    let lifecycle = gateway_lifecycle_lock().lock().await;
     let collection = {
         let runtime = gateway_runtime().lock().await;
         runtime.collection.clone()
     }
     .ok_or_else(|| "API 服务集合尚未创建".to_string())?;
 
-    stop_gateway().await;
-
-    let config_path = sidecar_config_path(&local_access_sidecar_dir()?);
-    let cleanup_result =
-        cleanup_managed_sidecar_port_processes(collection.port, config_path).await?;
-    let killed_count = match cleanup_result {
-        Ok(count) => count as u32,
-        Err(error) => {
-            logger::log_codex_api_warn(&format!(
-                "[CodexLocalAccess] 未清理非本实例端口进程，将继续尝试启动并准备随机端口兜底: port={}, error={}",
-                collection.port, error
-            ));
-            0
-        }
-    };
-
-    if collection.enabled {
-        ensure_gateway_matches_runtime().await?;
+    {
+        let _stop_request = GatewayStopRequestGuard::begin();
+        advance_gateway_lifecycle_generation();
+        stop_gateway_locked_checked("explicit_port_cleanup").await.1?;
     }
+    let config_path = sidecar_config_path(&local_access_sidecar_dir()?);
+    let killed_count =
+        cleanup_managed_sidecar_port_processes(collection.port, config_path).await?? as u32;
+    if local_access_gateway_should_run(&collection) {
+        ensure_gateway_matches_runtime_once_locked().await?;
+    } else {
+        wait_for_gateway_port_release(bind_host_for_collection(&collection), collection.port).await?;
+    }
+    drop(lifecycle);
 
     let state = snapshot_state().await?;
     Ok(CodexLocalAccessPortCleanupResult {
@@ -1600,15 +1598,40 @@ pub async fn kill_local_access_port_processes() -> Result<CodexLocalAccessPortCl
     })
 }
 
+pub async fn change_random_local_access_port() -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded_without_start().await?;
+    let lifecycle = gateway_lifecycle_lock().lock().await;
+    let (bind_host, previous_port) = {
+        let runtime = gateway_runtime().lock().await;
+        let collection = runtime
+            .collection
+            .as_ref()
+            .ok_or_else(|| "本地接入集合尚未创建".to_string())?;
+        (bind_host_for_collection(collection).to_owned(), collection.port)
+    };
+    let port = allocate_random_local_port_excluding(&bind_host, Some(previous_port))?;
+    persist_recovered_local_access_port(port).await?;
+    let result = ensure_gateway_matches_runtime_once_locked().await;
+    if let Err(error) = &result {
+        gateway_runtime().lock().await.last_error = Some(error.clone());
+    }
+    drop(lifecycle);
+    emit_local_access_state_updated();
+    result?;
+    ensure_local_access_profile_takeovers_from_runtime().await?;
+    snapshot_state().await
+}
+
 pub async fn update_local_access_port(port: u16) -> Result<CodexLocalAccessState, String> {
     ensure_runtime_loaded_without_start().await?;
+    let lifecycle = gateway_lifecycle_lock().lock().await;
 
     let maybe_collection = {
         let runtime = gateway_runtime().lock().await;
         runtime.collection.clone()
     };
 
-    let Some(mut collection) = maybe_collection else {
+    let Some(collection) = maybe_collection else {
         return Err("本地接入集合尚未创建".to_string());
     };
 
@@ -1618,17 +1641,12 @@ pub async fn update_local_access_port(port: u16) -> Result<CodexLocalAccessState
         Some(collection.port),
     )?;
     if collection.port == port {
+        drop(lifecycle);
         return snapshot_state().await;
     }
 
-    collection.port = port;
-    collection.updated_at = now_ms();
-    save_collection_to_disk(&collection)?;
-
-    {
-        let mut runtime = gateway_runtime().lock().await;
-        sync_runtime_collection(&mut runtime, collection);
-    }
+    persist_recovered_local_access_port(port).await?;
+    drop(lifecycle);
 
     ensure_gateway_matches_runtime().await?;
     snapshot_state().await
@@ -1746,9 +1764,59 @@ pub async fn restore_local_access_gateway() {
     }
 }
 
+// Upgrade cleanup only: retired Go processes can be stopped, never started.
+#[cfg(target_os = "windows")]
+fn retired_sidecar_binary_file_names() -> Vec<String> {
+    let target = env!("COCKPIT_RUST_TARGET");
+    if cfg!(target_os = "windows") {
+        vec![
+            format!("{CODEX_LOCAL_ACCESS_SIDECAR_BIN_NAME}.exe"),
+            format!("{CODEX_LOCAL_ACCESS_SIDECAR_BIN_NAME}-{target}.exe"),
+        ]
+    } else {
+        vec![
+            CODEX_LOCAL_ACCESS_SIDECAR_BIN_NAME.to_string(),
+            format!("{CODEX_LOCAL_ACCESS_SIDECAR_BIN_NAME}-{target}"),
+        ]
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn push_retired_sidecar_binary_candidates(candidates: &mut Vec<PathBuf>, dir: &Path) {
+    for name in retired_sidecar_binary_file_names() {
+        let path = dir.join(name);
+        if !candidates.iter().any(|candidate| candidate == &path) {
+            candidates.push(path);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn retired_sidecar_binary_candidates() -> Result<Vec<PathBuf>, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("读取当前程序路径失败: {}", e))?;
+    let parent = exe
+        .parent()
+        .ok_or_else(|| format!("当前程序路径缺少父目录: {}", exe.display()))?;
+    let mut candidates = Vec::new();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dev_sidecar_dir = manifest_dir.join("../sidecars/cockpit-cliproxy/bin");
+
+    if cfg!(debug_assertions) {
+        push_retired_sidecar_binary_candidates(&mut candidates, &dev_sidecar_dir);
+    }
+    push_retired_sidecar_binary_candidates(&mut candidates, parent);
+    if let Some(contents_dir) = parent.parent() {
+        push_retired_sidecar_binary_candidates(&mut candidates, &contents_dir.join("Resources"));
+    }
+    if !cfg!(debug_assertions) {
+        push_retired_sidecar_binary_candidates(&mut candidates, &dev_sidecar_dir);
+    }
+    Ok(candidates)
+}
+
 #[cfg(target_os = "windows")]
 fn close_installed_sidecar_processes_by_path(timeout_secs: u64) -> Result<usize, String> {
-    let candidates = sidecar_binary_candidates()?
+    let candidates = retired_sidecar_binary_candidates()?
         .into_iter()
         .filter(|path| path.exists())
         .collect::<Vec<_>>();

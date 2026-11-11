@@ -490,13 +490,14 @@ async fn apply_launch_speed_after_auth(
             .unwrap_or_else(|| id.to_string())
     });
     tauri::async_runtime::spawn_blocking(move || {
+        modules::codex_model_catalog_capabilities::prepare_managed_catalog(&profile_dir)?;
         // DeepSeek deliberately removes service_tier as an unsupported option.
         if account_id.as_deref().and_then(modules::codex_account::load_account)
             .is_some_and(|account| modules::codex_account::is_deepseek_account(&account)) {
             return Ok(());
         }
         modules::codex_speed::write_app_speed_for_dir(&profile_dir, speed.clone())?;
-        if let Err(error) = modules::codex_native_speed_catalog::prepare_for_profile(&profile_dir) {
+        if let Err(error) = modules::codex_app_enhancements::prepare_native_fast_for_profile(&profile_dir) {
             if speed == CodexAppSpeed::Ultrafast {
                 return Err(format!("无法准备超高速请求能力: {error}"));
             }
@@ -779,17 +780,20 @@ async fn repair_session_visibility_for_selected_instance(
     instance_id: &str,
     instance_name: &str,
     data_dir: &Path,
+    launch_mode: &InstanceLaunchMode,
 ) -> Result<bool, String> {
     let instance_id = instance_id.to_string();
     let instance_name = instance_name.to_string();
     let data_dir = data_dir.to_path_buf();
+    let launch_desktop = launch_mode_uses_desktop_runtime(launch_mode);
     tauri::async_runtime::spawn_blocking(move || {
         modules::codex_session_visibility::repair_session_visibility_quick_for_instance(
             &instance_id,
             &instance_name,
             &data_dir,
+            launch_desktop,
         )
-        .map(|_| true)
+        .map(|summary| !summary.local_project_recovery_deferred)
         .or_else(|error| {
             if modules::codex_session_visibility::can_defer_launch_snapshot_error(&error) {
                 modules::logger::log_warn(&format!("[Codex Start] session maintenance deferred before writes: instance_id={instance_id}, error={error}"));
@@ -2745,6 +2749,11 @@ async fn codex_start_instance_internal(
         }),
     );
     if let Some(account_id) = oauth_account_id.as_deref() {
+        if launch_mode_uses_desktop_runtime(&launch_target.launch_mode) {
+            modules::codex_device_restrictions::ensure_allowed(account_id,
+                modules::codex_device_restrictions::DESKTOP).await?;
+        }
+
         if skip_failed_step == Some("checkAccount") {
             emit_codex_instance_launch_step(
                 &app,
@@ -2789,7 +2798,6 @@ async fn codex_start_instance_internal(
                     > oauth_token_generation_before,
                 "localCredentialsValidated": skip_failed_step != Some("checkAccount"),
                 "skippedByUser": skip_failed_step == Some("checkAccount"),
-                "clientAuthStatus": checked_account.client_auth_status.clone(),
             }),
         );
     }
@@ -3029,6 +3037,7 @@ async fn codex_start_instance_internal(
                 DEFAULT_INSTANCE_ID,
                 "默认实例",
                 &default_dir,
+                &default_settings.launch_mode,
             )
             .await
             .map_err(|error| format!("Codex 启动已取消: {}", error))?;
@@ -3340,7 +3349,9 @@ async fn codex_start_instance_internal(
     if should_skip_launch_step(skip_failed_step, "writeProfile") {
         modules::logger::log_warn("[Codex Start] 用户选择跳过会话可见性修复步骤");
     } else {
-        let repaired = repair_session_visibility_for_selected_instance(&instance.id, &instance.name, instance_dir)
+        let repaired = repair_session_visibility_for_selected_instance(
+            &instance.id, &instance.name, instance_dir, &instance.launch_mode,
+        )
             .await
             .map_err(|error| format!("Codex 启动已取消: {}", error))?;
         if !repaired {

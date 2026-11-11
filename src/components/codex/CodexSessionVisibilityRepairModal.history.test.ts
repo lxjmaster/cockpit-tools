@@ -15,7 +15,7 @@ function contains(value: any, text: string): boolean {
   return Boolean(value && contains(value.props?.children, text));
 }
 
-function harness(options: { repairKind?: 'visibility' | 'history'; running?: boolean; secondaryRunning?: boolean; selected?: string[] } = {}) {
+function harness(options: { repairKind?: 'visibility' | 'history'; running?: boolean; secondaryRunning?: boolean; selected?: string[]; initialInstanceId?: string } = {}) {
   const providers = deferred<any>();
   const calls: Array<{ runId: string; options: any }> = [];
   const repaired: unknown[] = [];
@@ -59,6 +59,7 @@ function harness(options: { repairKind?: 'visibility' | 'history'; running?: boo
     } },
   });
   const props = { open: true, repairKind: options.repairKind ?? 'history', description: 'provider migration description',
+    initialInstanceId: options.initialInstanceId,
     selectedSessionIds: options.selected ?? ['chat-a', 'chat-a', 'chat-b'], totalSessionCount: 4,
     onClose: () => { closed += 1; }, onRepaired: (value: unknown) => { repaired.push(value); },
     onRunningChange: (value: boolean) => { running.push(value); } };
@@ -107,6 +108,37 @@ test('history repair ignores pending providers and passes only the selected inst
   assert.equal(app.formatted(), 0, 'history must retain the host message instead of provider-migration summaries');
   assert.equal(app.closed(), 0);
   assert.equal(app.repaired.length, 1);
+  app.h.unmount();
+});
+
+test('partial history results show missing sources inside the dialog and clear them before retry', async () => {
+  const app = harness();
+  await settlePromises();
+  const warning = 'Missing history: affected-id → missing-source-id';
+  app.execute(async (request) => ({
+    message: request.dryRun ? 'One repair available' : 'One index repaired',
+    historyProjectionCount: 1,
+    historyRepairWarning: warning,
+  }));
+  app.button('preview').props.onClick();
+  await settlePromises();
+  assert.equal(app.error.message, warning);
+  assert.ok(app.rendered().some((node) => contains(node, 'One repair available')));
+  assert.equal(app.button('confirmRepair').props.disabled, false);
+  app.button('confirmRepair').props.onClick();
+  await settlePromises();
+  assert.equal(app.error.message, warning);
+  assert.ok(app.rendered().some((node) => contains(node, 'One index repaired')));
+  assert.equal(app.closed(), 0);
+  assert.equal(app.repaired.length, 1);
+  const pending = deferred<any>();
+  app.execute(() => pending.promise);
+  app.button('start').props.onClick();
+  app.h.flush();
+  assert.equal(app.error.message, null);
+  pending.resolve({ message: 'No pending repairs', historyProjectionCount: 0 });
+  await settlePromises();
+  assert.equal(app.error.message, null);
   app.h.unmount();
 });
 
@@ -327,4 +359,24 @@ test('history progress stages use dedicated localized messages', () => {
     }
   }
   h.unmount();
+});
+
+test('visibility repair keeps quick and full choices and sends the current instance through the existing request', async () => {
+  const app = harness({ repairKind: 'visibility', initialInstanceId: 'secondary' });
+  app.providers.resolve({ defaultProvider: 'provider', providers: [{ id: 'provider', sources: [], isDefault: true }] });
+  await settlePromises();
+  assert.equal(app.button('modeQuick').props['aria-pressed'], true);
+  assert.equal(app.button('modeDeep').props['aria-pressed'], false);
+  assert.equal(app.rendered().some((node) => contains(node, prefix + 'modeProjects')), false);
+  app.button('preview').props.onClick(); await settlePromises();
+  assert.deepEqual(app.calls[0].options, { mode: 'quick', dryRun: true, targetInstanceId: 'secondary',
+    targetProvider: 'provider', repairInstanceIds: ['secondary'], sessionIds: ['chat-a', 'chat-b'] });
+  app.mode('modeDeep');
+  app.button('start').props.onClick(); await settlePromises();
+  assert.equal(app.calls[1].options.mode, 'deep');
+  assert.equal(app.calls[1].options.targetInstanceId, 'secondary');
+  assert.equal(app.calls[1].options.dryRun, false);
+  assert.equal(app.calls.length, 2, 'project and index stages belong to the same host request');
+  assert.equal(app.closed(), 0);
+  app.h.unmount();
 });

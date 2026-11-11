@@ -23,7 +23,6 @@ const CODEX_DESKTOP_ORIGINATOR: &str = "Codex Desktop";
 const CHATGPT_WEB_REFERER: &str = "https://chatgpt.com/";
 const CHATGPT_WEB_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 const RESET_CREDITS_MOCK_JSON_ENV: &str = "CODEX_RESET_CREDITS_MOCK_JSON";
-const SUBSCRIPTION_RETRY_INTERVAL_SECONDS: i64 = 30 * 60;
 const HTTP_ERROR_BODY_DISPLAY_MAX_CHARS: usize = 4000;
 
 fn get_header_value(headers: &HeaderMap, name: &str) -> String {
@@ -218,9 +217,9 @@ struct UsageResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexResetCreditsSnapshot {
-    available_count: Option<i64>,
-    credits: Vec<CodexResetCredit>,
-    next_expires_at: Option<i64>,
+    pub(crate) available_count: Option<i64>,
+    pub(crate) credits: Vec<CodexResetCredit>,
+    pub(crate) next_expires_at: Option<i64>,
 }
 
 fn normalize_remaining_percentage(window: &WindowInfo) -> Result<i32, String> {
@@ -260,16 +259,6 @@ fn normalize_reset_time(window: &WindowInfo) -> Option<i64> {
 pub struct FetchQuotaResult {
     pub quota: CodexQuota,
     pub plan_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RefreshQuotaOptions {
-    pub force_subscription_refresh: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SubscriptionRefreshOptions {
-    force: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -478,7 +467,7 @@ fn normalize_optional_json_scalar(value: Option<&serde_json::Value>) -> Option<S
     }
 }
 
-fn parse_subscription_timestamp(raw: &str) -> Option<i64> {
+pub(crate) fn parse_subscription_timestamp(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -505,46 +494,6 @@ fn subscription_missing_or_expired(raw: Option<&str>) -> bool {
         return true;
     };
     timestamp <= now_timestamp()
-}
-
-fn mark_subscription_retry_pending(account: &mut CodexAccount, error: Option<String>) {
-    let now = now_timestamp();
-    account.subscription_query_last_attempt_at = Some(now);
-    account.subscription_query_next_retry_at = Some(now + SUBSCRIPTION_RETRY_INTERVAL_SECONDS);
-    account.subscription_query_last_error =
-        error.and_then(|message| normalize_optional_ref(Some(&message)));
-}
-
-fn clear_subscription_retry_pending(account: &mut CodexAccount) {
-    account.subscription_query_next_retry_at = None;
-    account.subscription_query_last_error = None;
-}
-
-fn normalize_subscription_retry_state(account: &mut CodexAccount) {
-    if !subscription_missing_or_expired(account.subscription_active_until.as_deref()) {
-        clear_subscription_retry_pending(account);
-    }
-}
-
-fn should_attempt_subscription_refresh(
-    account: &CodexAccount,
-    options: SubscriptionRefreshOptions,
-) -> bool {
-    if !subscription_missing_or_expired(account.subscription_active_until.as_deref())
-        && !options.force
-    {
-        return false;
-    }
-
-    if options.force {
-        return true;
-    }
-
-    let now = now_timestamp();
-    account
-        .subscription_query_next_retry_at
-        .map(|next_retry_at| next_retry_at <= now)
-        .unwrap_or(true)
 }
 
 fn extract_account_record_field(
@@ -653,19 +602,14 @@ fn parse_account_check_snapshot(
             )
         });
 
+    let organization_matches = |item: &AccountCheckRecord| {
+        preferred_organization_id.as_deref().is_some_and(|preferred| {
+            normalize_optional_ref(item.key.as_deref()).as_deref() == Some(preferred)
+        })
+    };
     let selected = records
         .iter()
-        .find(|item| {
-            preferred_organization_id
-                .as_deref()
-                .is_some_and(|preferred| {
-                    item.key
-                        .as_deref()
-                        .and_then(|value| normalize_optional_ref(Some(value)))
-                        .as_deref()
-                        == Some(preferred)
-                })
-        })
+        .find(|item| organization_matches(item))
         .or_else(|| {
             records.iter().find(|item| {
                 let Some(preferred) = preferred_account_id.as_deref() else {
@@ -711,6 +655,18 @@ fn parse_account_check_snapshot(
         account_record,
         &["account_id", "id", "chatgpt_account_id", "workspace_id"],
     );
+    if preferred_account_id.is_some()
+        && account_id != preferred_account_id
+        && !organization_matches(selected)
+    {
+        // The default record can belong to a different workspace. Use the
+        // existing account-specific subscription query for the known workspace.
+        return Ok(SubscriptionStatusSnapshot {
+            account_id: preferred_account_id,
+            plan_type: None,
+            subscription_active_until: None,
+        });
+    }
     let plan_type = entitlement
         .and_then(|value| extract_account_record_field(value, &["subscription_plan"]))
         .or_else(|| extract_account_record_field(account_record, &["plan_type", "planType"]));
@@ -783,8 +739,11 @@ fn build_subscription_headers(
 async fn fetch_subscription_account_check(
     account: &CodexAccount,
 ) -> Result<SubscriptionStatusSnapshot, String> {
-    let client = crate::modules::codex_proxy_runtime::client_builder(account, reqwest::Client::builder()).await?
-        .build().map_err(|_| "PROXY_CLIENT_FAILED")?;
+    let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20));
+    let client = crate::modules::codex_proxy_runtime::client_builder(account, builder)
+        .await?
+        .build()
+        .map_err(|_| "PROXY_CLIENT_FAILED")?;
     let headers =
         build_subscription_headers(account, "/backend-api/accounts/check/v4-2023-04-27", None)?;
     let timezone_offset_min = current_chatgpt_timezone_offset_min();
@@ -834,8 +793,11 @@ async fn fetch_subscriptions_snapshot(
     account: &CodexAccount,
     account_id: &str,
 ) -> Result<SubscriptionStatusSnapshot, String> {
-    let client = crate::modules::codex_proxy_runtime::client_builder(account, reqwest::Client::builder()).await?
-        .build().map_err(|_| "PROXY_CLIENT_FAILED")?;
+    let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20));
+    let client = crate::modules::codex_proxy_runtime::client_builder(account, builder)
+        .await?
+        .build()
+        .map_err(|_| "PROXY_CLIENT_FAILED")?;
     let headers = build_subscription_headers(account, "/backend-api/subscriptions", None)?;
 
     let response = client
@@ -912,49 +874,37 @@ async fn fetch_subscription_status_snapshot(
     Ok(snapshot)
 }
 
-async fn refresh_subscription_state(
-    account: &mut CodexAccount,
-    options: SubscriptionRefreshOptions,
-) -> Result<bool, String> {
-    normalize_subscription_retry_state(account);
-    if !should_attempt_subscription_refresh(account, options) {
-        return Ok(false);
-    }
-
+async fn refresh_subscription_state(account: &mut CodexAccount) -> Result<(), String> {
+    account.subscription_query_last_attempt_at = Some(now_timestamp());
+    account.subscription_query_next_retry_at = None;
     let snapshot = match fetch_subscription_status_snapshot(account).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            mark_subscription_retry_pending(account, Some(error.clone()));
+            account.subscription_query_last_error = Some(error.clone());
             return Err(error);
         }
     };
 
-    let mut changed = false;
-    if snapshot.account_id.is_some() && account.account_id != snapshot.account_id {
-        account.account_id = snapshot.account_id.clone();
-        changed = true;
+    if snapshot.account_id.is_some() {
+        account.account_id = snapshot.account_id;
     }
-
-    let previous_plan = account.plan_type.clone();
-    let previous_subscription = account.subscription_active_until.clone();
-    sync_subscription_from_token(
-        account,
-        snapshot.plan_type.clone(),
-        snapshot.subscription_active_until.clone(),
-    );
-    changed = changed
-        || previous_plan != account.plan_type
-        || previous_subscription != account.subscription_active_until;
-
-    account.subscription_query_last_attempt_at = Some(now_timestamp());
-    if subscription_missing_or_expired(account.subscription_active_until.as_deref()) {
-        mark_subscription_retry_pending(account, Some("订阅接口未返回有效订阅时间".to_string()));
-    } else {
+    if snapshot.plan_type.is_some() {
+        account.plan_type = snapshot.plan_type;
+    }
+    if snapshot
+        .subscription_active_until
+        .as_deref()
+        .and_then(parse_subscription_timestamp)
+        .is_some()
+    {
+        account.subscription_active_until = snapshot.subscription_active_until;
         account.subscription_query_last_success_at = Some(now_timestamp());
-        clear_subscription_retry_pending(account);
+        account.subscription_query_last_error = None;
+    } else {
+        account.subscription_query_last_error = Some("订阅接口未返回有效订阅时间".into());
     }
 
-    Ok(changed)
+    Ok(())
 }
 
 async fn refresh_account_tokens(account: &mut CodexAccount, reason: &str) -> Result<(), String> {
@@ -972,6 +922,8 @@ async fn refresh_account_tokens(account: &mut CodexAccount, reason: &str) -> Res
 
 /// 查询单个账号的配额
 pub async fn fetch_quota(account: &CodexAccount) -> Result<FetchQuotaResult, String> {
+    use crate::modules::codex_device_restrictions as restrictions;
+    let observation_started = restrictions::now();
     let account_id = account.account_id.clone().or_else(|| {
         codex_account::extract_chatgpt_account_id_from_access_token(&account.tokens.access_token)
     });
@@ -1007,6 +959,10 @@ pub async fn fetch_quota(account: &CodexAccount) -> Result<FetchQuotaResult, Str
     ));
 
     if !status.is_success() {
+        if restrictions::explicit_message(&body) {
+            restrictions::observe_account(account, restrictions::QUOTA, "usage_response", observation_started, true).await;
+            return Err(restrictions::paused_message());
+        }
         let detail_code = extract_detail_code_from_body(&body);
 
         crate::modules::codex_auth_diagnostic::log_event(
@@ -1061,6 +1017,7 @@ pub async fn fetch_quota(account: &CodexAccount) -> Result<FetchQuotaResult, Str
     let quota = parse_quota_from_usage(&usage, &body)?;
     let plan_type = usage.plan_type.clone();
 
+    restrictions::observe_account(account, restrictions::QUOTA, "usage_response", observation_started, false).await;
     Ok(FetchQuotaResult { quota, plan_type })
 }
 
@@ -1526,7 +1483,6 @@ pub async fn fetch_account_reset_credits(
     {
         refresh_account_tokens(&mut account, "查询主动重置记录前 Token 已过期").await?;
         sync_subscription_expiry_from_current_id_token(&mut account);
-        normalize_subscription_retry_state(&mut account);
         codex_account::save_account_preserving_egress_proxy(&account)?;
     }
 
@@ -1535,7 +1491,6 @@ pub async fn fetch_account_reset_credits(
         Err(error) if !account.is_agent_identity_auth() && is_unauthorized_error(&error) => {
             refresh_account_tokens(&mut account, "主动重置记录接口返回 401").await?;
             sync_subscription_expiry_from_current_id_token(&mut account);
-            normalize_subscription_retry_state(&mut account);
             codex_account::save_account_preserving_egress_proxy(&account)?;
             fetch_reset_credits(&account).await
         }
@@ -1543,10 +1498,46 @@ pub async fn fetch_account_reset_credits(
     }
 }
 
+// Matches the official Codex backend-client consume response. HTTP 2xx
+// acknowledges the request; only the outcome confirms a redemption.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ResetCreditConsumeOutcome {
+    Reset,
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+
+impl ResetCreditConsumeOutcome {
+    pub(crate) fn into_result(self) -> Result<(), String> {
+        use crate::modules::codex_reset_automation::message;
+        match self {
+            Self::Reset | Self::AlreadyRedeemed => Ok(()),
+            Self::NothingToReset => Err(message("nothingToReset")),
+            Self::NoCredit => Err(message("noCredits")),
+        }
+    }
+}
+
+fn parse_reset_credit_consume_outcome(body: &str) -> Result<ResetCreditConsumeOutcome, String> {
+    #[derive(Deserialize)]
+    struct ConsumeResponse {
+        code: ResetCreditConsumeOutcome,
+    }
+    serde_json::from_str::<ConsumeResponse>(body)
+        .map(|response| response.code)
+        .map_err(|_| crate::modules::codex_reset_automation::message("unknownOutcome"))
+}
+
 async fn post_reset_credit_once(
     account: &CodexAccount,
     redeem_request_id: &str,
-) -> Result<(), String> {
+    expected_identity: &str,
+) -> Result<ResetCreditConsumeOutcome, String> {
+    if crate::modules::codex_reset_automation::account_identity(account) != expected_identity {
+        return Err(crate::modules::codex_reset_automation::message("conflict"));
+    }
     let request_body = json!({ "redeem_request_id": redeem_request_id });
     let response = send_codex_api_request(
         account,
@@ -1571,7 +1562,7 @@ async fn post_reset_credit_once(
     ));
 
     if status.is_success() {
-        return Ok(());
+        return parse_reset_credit_consume_outcome(&body);
     }
 
     let detail_code = extract_detail_code_from_body(&body);
@@ -1589,6 +1580,14 @@ fn is_unauthorized_error(message: &str) -> bool {
 }
 
 pub async fn consume_reset_credit(account_id: &str) -> Result<(), String> {
+    crate::modules::codex_reset_automation::consume_manual(account_id).await
+}
+
+pub(crate) async fn consume_reset_credit_with_request_id(
+    account_id: &str,
+    redeem_request_id: &str,
+    expected_identity: &str,
+) -> Result<ResetCreditConsumeOutcome, String> {
     let mut account = codex_account::prepare_account_for_injection(account_id).await?;
     if account.is_api_key_auth() {
         return Err("API Key 账号不支持主动重置额度".to_string());
@@ -1598,7 +1597,7 @@ pub async fn consume_reset_credit(account_id: &str) -> Result<(), String> {
             "Codex 主动重置使用显式 mock JSON 空操作: account_id={}",
             account_id
         ));
-        return Ok(());
+        return Ok(ResetCreditConsumeOutcome::Reset);
     }
 
     if !account.is_agent_identity_auth()
@@ -1606,19 +1605,16 @@ pub async fn consume_reset_credit(account_id: &str) -> Result<(), String> {
     {
         refresh_account_tokens(&mut account, "主动重置前 Token 已过期").await?;
         sync_subscription_expiry_from_current_id_token(&mut account);
-        normalize_subscription_retry_state(&mut account);
         codex_account::save_account_preserving_egress_proxy(&account)?;
     }
 
-    let redeem_request_id = uuid::Uuid::new_v4().to_string();
-    match post_reset_credit_once(&account, &redeem_request_id).await {
-        Ok(()) => Ok(()),
+    match post_reset_credit_once(&account, redeem_request_id, expected_identity).await {
+        Ok(outcome) => Ok(outcome),
         Err(error) if !account.is_agent_identity_auth() && is_unauthorized_error(&error) => {
             refresh_account_tokens(&mut account, "主动重置接口返回 401").await?;
             sync_subscription_expiry_from_current_id_token(&mut account);
-            normalize_subscription_retry_state(&mut account);
             codex_account::save_account_preserving_egress_proxy(&account)?;
-            post_reset_credit_once(&account, &redeem_request_id).await
+            post_reset_credit_once(&account, redeem_request_id, expected_identity).await
         }
         Err(error) => Err(error),
     }
@@ -1662,6 +1658,11 @@ fn sync_subscription_from_token(
 }
 
 fn sync_subscription_expiry_from_current_id_token(account: &mut CodexAccount) {
+    if account.subscription_query_last_success_at.is_some()
+        && account.subscription_active_until.is_some()
+    {
+        return;
+    }
     if let Ok((_, _, _, subscription_active_until, _, _)) =
         codex_account::extract_user_info(&account.tokens.id_token)
     {
@@ -1672,9 +1673,7 @@ fn sync_subscription_expiry_from_current_id_token(account: &mut CodexAccount) {
 /// 刷新账号配额并保存（包含 token 自动刷新）
 async fn refresh_account_quota_once(
     account_id: &str,
-    options: RefreshQuotaOptions,
     runtime_snapshot: &codex_account::CodexQuotaRuntimeSnapshot,
-    quota_only: bool,
 ) -> Result<CodexQuota, String> {
     let mut account = match codex_account::prepare_account_for_quota_query_with_runtime_snapshot(
         account_id,
@@ -1725,7 +1724,6 @@ async fn refresh_account_quota_once(
             if result.plan_type.is_some() {
                 sync_subscription_from_token(&mut account, result.plan_type.clone(), None);
             }
-            normalize_subscription_retry_state(&mut account);
             account.replace_quota_preserving_team_history(result.quota.clone(), now_timestamp());
             account.quota_error = None;
             account.usage_updated_at = Some(now_timestamp());
@@ -1770,7 +1768,6 @@ async fn refresh_account_quota_once(
                 logger::log_info(&format!("账号 {} 的 Token 刷新成功", account.email));
 
                 sync_subscription_expiry_from_current_id_token(&mut account);
-                normalize_subscription_retry_state(&mut account);
 
                 codex_account::save_account_preserving_egress_proxy(&account)?;
             }
@@ -1787,77 +1784,36 @@ async fn refresh_account_quota_once(
         }
     }
 
-    let subscription_options = SubscriptionRefreshOptions {
-        force: options.force_subscription_refresh,
-    };
     let quota_query_started = std::time::Instant::now();
     let result = match fetch_quota(&account).await {
         Ok(result) => result,
         Err(e) => {
-            if quota_only {
-                let original = account.clone();
-                let error = e.clone();
-                let saved = tokio::task::spawn_blocking(move || {
-                    codex_account::save_quota_sync_failure(&original, error, quota_query_started)
-                }).await;
-                if !matches!(saved, Ok(Ok(()))) {
-                    logger::log_warn("[Codex Quota Sync] failed to persist refresh failure");
-                }
-                return Err(e);
-            }
-            // Retrying subscription through an unavailable local proxy only adds
-            // more work to the same saturated resource and cannot repair quota.
-            if !quota_only && !is_local_proxy_error(&e) {
-                if let Err(subscription_error) =
-                    refresh_subscription_state(&mut account, subscription_options).await
-                {
-                    logger::log_warn(&format!(
-                        "Codex 账号 {} 刷新配额失败后补拉订阅信息失败: {}",
-                        account.email, subscription_error
-                    ));
-                }
-            }
-            if write_quota_error(&mut account, e.clone()) {
-                if let Err(save_err) = codex_account::save_account_preserving_egress_proxy(&account) {
-                    logger::log_warn(&format!("写入 Codex 配额错误失败: {}", save_err));
-                }
+            let error = e.clone();
+            let saved = tokio::task::spawn_blocking(move || {
+                codex_account::save_quota_sync_failure(&account, error, quota_query_started)
+            })
+            .await;
+            if !matches!(saved, Ok(Ok(()))) {
+                logger::log_warn("[Codex Quota Sync] failed to persist refresh failure");
             }
             return Err(e);
         }
     };
 
     // Commit only quota fields against the current credential/workspace identity.
-    // Notify every window before optional, potentially slow subscription work.
-    let original = account.clone();
     let fresh_quota = result.quota.clone();
     let fresh_plan = result.plan_type.clone();
-    account = tokio::task::spawn_blocking(move || {
-        codex_account::save_refreshed_quota(&original, fresh_quota, fresh_plan, quota_query_started)
+    tokio::task::spawn_blocking(move || {
+        codex_account::save_refreshed_quota(&account, fresh_quota, fresh_plan, quota_query_started)
     })
     .await
     .map_err(|e| e.to_string())??;
     crate::modules::codex_local_access::confirm_gateway_quota_refresh(
         account_id, &result.quota, quota_query_started,
     );
-    if quota_only {
-        return Ok(result.quota);
-    }
-    let before_subscription = account.clone();
-    if let Err(subscription_error) =
-        refresh_subscription_state(&mut account, subscription_options).await
-    {
-        logger::log_warn(&format!(
-            "Codex 账号 {} 刷新订阅信息失败，保留现有订阅标识: {}",
-            account.email, subscription_error
-        ));
-    }
-
-    tokio::task::spawn_blocking(move || {
-        codex_account::save_quota_subscription_maintenance(&before_subscription, &account)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
+    crate::modules::codex_local_access::clear_native_quota_cooldown_after_refresh(
+        account_id, &result.quota, quota_query_started,
+    ).await;
     Ok(result.quota)
 }
 
@@ -1869,9 +1825,7 @@ async fn refresh_account_quota_with_runtime_snapshot(
         "quota_refresh_flow_start",
         serde_json::json!({"account_id": account_id}),
     );
-    let result =
-        refresh_account_quota_once(account_id, RefreshQuotaOptions::default(), runtime_snapshot, false)
-            .await;
+    let result = refresh_account_quota_once(account_id, runtime_snapshot).await;
     crate::modules::codex_auth_diagnostic::log_event(
         "quota_refresh_flow_finished",
         serde_json::json!({
@@ -1916,9 +1870,7 @@ pub(crate) async fn refresh_active_account_quota(
         None => Arc::new(codex_account::CodexQuotaRuntimeSnapshot::capture().await?),
     };
     let sync_started = std::time::Instant::now();
-    let mut result = refresh_account_quota_once(
-        account_id, RefreshQuotaOptions::default(), &runtime, true,
-    ).await;
+    let mut result = refresh_account_quota_once(account_id, &runtime).await;
     if result.is_ok() && !crate::modules::codex_quota_sync::observed_since(account_id, sync_started) {
         // Ownership deferral returns cached quota for existing manual callers.
         // The activity worker must back off instead of treating it as a new GET.
@@ -1987,41 +1939,15 @@ pub async fn refresh_freshly_authorized_account_quota(
         }
     };
 
-    let latest = codex_account::save_refreshed_quota(
+    codex_account::save_refreshed_quota(
         &account, result.quota.clone(), result.plan_type.clone(), query_started,
     )?;
-    let mut normalized = latest.clone();
-    normalize_subscription_retry_state(&mut normalized);
-    codex_account::save_quota_subscription_maintenance(&latest, &normalized)?;
 
     crate::modules::codex_local_access::reevaluate_bound_oauth_quota_reserve_after_refresh(
         account_id, true,
     )
     .await;
     Ok(result.quota)
-}
-
-pub async fn refresh_account_quota_with_options(
-    account_id: &str,
-    options: RefreshQuotaOptions,
-) -> Result<CodexQuota, String> {
-    let account = codex_account::load_account(account_id)
-        .ok_or_else(|| format!("账号不存在: {}", account_id))?;
-    let runtime_snapshot = if account.is_api_key_auth()
-        || account.is_agent_identity_auth()
-        || account.is_web_session_auth()
-    {
-        codex_account::CodexQuotaRuntimeSnapshot::empty()
-    } else {
-        codex_account::CodexQuotaRuntimeSnapshot::capture().await?
-    };
-    let result = refresh_account_quota_once(account_id, options, &runtime_snapshot, false).await;
-    crate::modules::codex_local_access::reevaluate_bound_oauth_quota_reserve_after_refresh(
-        account_id,
-        result.is_ok(),
-    )
-    .await;
-    result
 }
 
 pub async fn probe_import_account_quota(account: &CodexAccount) -> Result<CodexQuota, String> {
@@ -2046,8 +1972,10 @@ pub async fn probe_import_account_quota(account: &CodexAccount) -> Result<CodexQ
 
 pub async fn refresh_account_subscription_info(
     account_id: &str,
-    force: bool,
 ) -> Result<CodexAccount, String> {
+    let _flight = super::codex_subscription_refresh::account_gate(account_id)
+        .lock_owned()
+        .await;
     let mut account = codex_account::prepare_account_for_injection(account_id).await?;
     if account.is_api_key_auth() {
         return Err("API Key 账号不支持刷新订阅信息".to_string());
@@ -2064,22 +1992,28 @@ pub async fn refresh_account_subscription_info(
 
     if crate::modules::codex_oauth::is_token_expired(&account.tokens.access_token) {
         refresh_account_tokens(&mut account, "订阅信息刷新前 Token 已过期").await?;
-        sync_subscription_expiry_from_current_id_token(&mut account);
-        normalize_subscription_retry_state(&mut account);
     }
 
-    match refresh_subscription_state(&mut account, SubscriptionRefreshOptions { force }).await {
-        Ok(_) => {
-            account = codex_account::save_account_preserving_egress_proxy(&account)?;
-            Ok(account)
+    query_and_save_subscription(account).await
+}
+
+pub(crate) async fn query_and_save_subscription(
+    mut account: CodexAccount,
+) -> Result<CodexAccount, String> {
+    let original = account.clone();
+    let result = refresh_subscription_state(&mut account).await;
+    let saved = tokio::task::spawn_blocking(move || {
+        codex_account::save_subscription_refresh(&original, &account)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if let Err(error) = result {
+        if let Err(save_error) = saved {
+            logger::log_warn(&format!("写入订阅刷新状态失败: {save_error}"));
         }
-        Err(error) => {
-            if let Err(save_err) = codex_account::save_account_preserving_egress_proxy(&account) {
-                logger::log_warn(&format!("写入订阅刷新状态失败: {}", save_err));
-            }
-            Err(error)
-        }
+        return Err(error);
     }
+    saved
 }
 
 fn attach_runtime_snapshot_to_account_ids(
@@ -2657,6 +2591,27 @@ mod tests {
     }
 
     #[test]
+    fn subscription_lookup_does_not_use_another_workspaces_expiry() {
+        let mut account = subscription_test_account();
+        account.account_id = Some("target".into());
+        let snapshot = parse_account_check_snapshot(
+            &json!({
+                "accounts": {
+                    "default": {
+                        "account": { "account_id": "other", "is_default": true },
+                        "entitlement": { "subscription_plan": "plus", "expires_at": "2028-01-01T00:00:00Z" }
+                    }
+                }
+            }),
+            &account,
+        )
+        .unwrap();
+        assert_eq!(snapshot.account_id.as_deref(), Some("target"));
+        assert_eq!(snapshot.plan_type, None);
+        assert_eq!(snapshot.subscription_active_until, None);
+    }
+
+    #[test]
     fn account_check_fallback_prefers_default_then_paid() {
         let account = subscription_test_account();
         let default_snapshot = parse_account_check_snapshot(
@@ -2809,5 +2764,26 @@ mod tests {
                 && !lower.contains("referer:")
                 && !lower.contains("sec-fetch-site:")
         }));
+    }
+}
+
+#[cfg(test)]
+mod reset_credit_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn reset_credit_consume_checks_business_result_of_successful_http_response() {
+        for (body, applied) in [
+            (r#"{"code":"reset","windows_reset":2}"#, true),
+            (r#"{"code":"already_redeemed"}"#, true),
+            (r#"{"code":"nothing_to_reset"}"#, false),
+            (r#"{"code":"no_credit"}"#, false),
+        ] {
+            let outcome = parse_reset_credit_consume_outcome(body).unwrap();
+            assert_eq!(outcome.into_result().is_ok(), applied, "{body}");
+        }
+        for body in ["", "{}", r#"{"code":"unknown"}"#, "<html>OK</html>"] {
+            assert!(parse_reset_credit_consume_outcome(body).is_err(), "{body}");
+        }
     }
 }

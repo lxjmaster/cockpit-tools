@@ -1,3 +1,5 @@
+import { ModalErrorMessage } from "../components/ModalErrorMessage";
+import { CodexKeyBudgetEditor, CodexKeyBudgetSummary } from '../components/codex/CodexKeyBudgetEditor';
 import { requestCodexOfficialAuthorizationManagement } from "../utils/codexAccountServiceNavigation";
 import { useChatGptPlanOverview } from "../hooks/useChatGptPlanOverview";
 import { CodexServiceAccountDetails } from "../components/codex/CodexServiceAccountDetails";
@@ -9,8 +11,10 @@ import { CodexServiceMemberAuthorization } from "../components/codex/CodexServic
 import { CodexServiceEmptyMembers } from "../components/codex/CodexServiceEmptyMembers";
 import { CodexApiRequestLogs } from "./CodexApiRequestLogs";
 import { useMemo, useState } from "react";
+import { CodexOverloadRetrySetting } from "../components/codex/CodexOverloadRetrySetting";
+import { CodexOverloadHistory, useCodexOverloadCounts } from "./CodexOverloadHistory";
 import { isCodexChatgptPlanAccount } from "../types/codex";
-import { CodexGatewayModeControl, formatCodexGatewayModeError } from "../components/codex/CodexGatewayModeControl";
+import { formatCodexGatewayModeError } from "../utils/codexGatewayError";
 import { CodexSessionIdentityMappingControl } from "../components/codex/CodexSessionIdentityMappingControl";
 import { CodexSpeedControl } from "../components/codex/CodexSpeedControl";
 import { Activity, BadgeDollarSign, ChevronDown, Check, CircleAlert, Copy, Eye, EyeOff, FolderPlus, Gauge, Image, Pin, PinOff, Play, Plus, Power, RefreshCw, Route, Send, ShieldCheck, SlidersHorizontal, Trash2, Undo2, Wrench, X } from "lucide-react";
@@ -27,6 +31,8 @@ import { formatCodexQuotaPoolPlanLabel, formatCodexQuotaPoolPercent, formatCodex
 import { CODEX_LOCAL_ACCESS_STATUS_KEYS, resolveCodexLocalAccessRuntimeStatus } from "../utils/codexLocalAccessStatus";
 import { SingleSelectDropdown } from "../components/SingleSelectDropdown";
 import { CodexLocalAccessModal } from "../components/CodexLocalAccessModal";
+import { CodexImageForwardConfig } from "../components/CodexImageForwardConfig";
+import { CodexImageModelSelect } from "../components/CodexImageModelConfig";
 import { CodexAccountPoolHealthModal } from "../components/CodexAccountPoolHealthModal";
 import { CodexStatsRangePicker } from "../components/CodexStatsRangePicker";
 import { CodexUsageTrend } from "../components/codex/CodexUsageTrend";
@@ -48,7 +54,6 @@ export type CodexApiServiceViewProps = ReturnType<typeof useCodexApiServicePageC
 
 /** 渲染 CodexApiServicePage 的界面；业务状态与动作统一由 Controller 提供。 */
 export function CodexApiServiceView(props: CodexApiServiceViewProps) {
-  const [gatewaySaving, setGatewaySaving] = useState(false);
   const {
     accessScope,
     inspectionNoticeKey,
@@ -65,6 +70,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
     accountModelRuleDrafts,
     accountModelRuleSelected,
     accountModelRulesOpen,
+    accountModelRuleError,
     accounts,
     accountsLoaded,
     activating,
@@ -80,6 +86,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
     apiKeyStatsById,
     apiServiceIsCurrent,
     applyTimeoutPreset,
+    baseUrl,
     busy: controllerBusy,
     clearTestChat,
     clientBaseUrlHost,
@@ -116,7 +123,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
     handleCustomStatsRangeApply,
     handleDeleteApiKey,
     handleDeleteTimeoutPreset,
-    handleKillPort,
+    openPortRecovery,
     handleOpenAccountModelMappings,
     handleOpenAccountModelRules,
     handleOpenPricingModal,
@@ -269,10 +276,19 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
   } = props;
   const planGrants = useChatGptPlanOverview(collection?.accountIds, collection?.officialAccountBindings);
   const displayMemberAccounts = useMemo(() => codexServiceDisplayRows(memberAccounts), [memberAccounts]);
+  const [overloadAccount, setOverloadAccount] = useState<{ id: string; name: string } | null>(null);
+  const overload = useCodexOverloadCounts(statsTimeRange.startAt, statsTimeRange.endAt, activeTab === "accounts" ||
+    (activeTab === "logs" && statsLogTab === "accounts"));
+  const showOverloadHistory = (id: string, name: string) => {
+    setOverloadAccount({ id, name });
+    setStatsLogTab("logs");
+    setActiveTab("logs");
+  };
   const accountStats = useMemo(() => aggregateCodexServiceAccountStats(selectedStatsWindow?.accounts ?? [], accounts,
     planGrants.accounts, planGrants.displaySourceIds), [selectedStatsWindow?.accounts, accounts, planGrants.accounts, planGrants.displaySourceIds]);
   const displayPoolHealth = summarizeAccountPoolHealth(localAccessAccounts, memberIds, state);
-  const busy = controllerBusy || gatewaySaving;
+  const busy = controllerBusy;
+  const lanBaseUrl = state?.lanBaseUrl;
   const localAccessStatus = resolveCodexLocalAccessRuntimeStatus(collection, state);
   const keyRecoveryRequired = isCodexGatewayKeyRecoveryError(state?.lastError);
   return (
@@ -494,11 +510,11 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                 {!keyRecoveryRequired && <button
                   type="button"
                   className="btn btn-secondary btn-sm"
-                  onClick={() => void handleKillPort()}
+                  onClick={openPortRecovery}
                   disabled={portKilling || busy || activating}
                 >
                   <Wrench size={13} />
-                  {t("codex.localAccess.killPortAction", "清理端口")}
+                  {t("codex.localAccess.portRecoveryTitle")}
                 </button>}
               </div>
             )}
@@ -583,18 +599,15 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                 <h2>{t("codex.localAccess.configTitle", "服务配置")}</h2>
               </div>
               <div className="codex-api-service-config-list">
-                <CodexGatewayModeControl state={state} onState={setState}
-                  disabled={busy || activating || testDialogRunning || sidecarRestarting}
-                  onError={setError} onNotice={setNotice} onSavingChange={setGatewaySaving} />
                 <label>
                   <span>Base URL</span>
                   <div className="codex-api-service-copy-row">
-                    <code>{displayBaseUrl}</code>
+                    <code>{baseUrl}</code>
                     <button
                       type="button"
                       className="folder-icon-btn"
-                      onClick={() => void handleCopy("baseUrl", displayBaseUrl)}
-                      disabled={!displayBaseUrl}
+                      onClick={() => void handleCopy("baseUrl", baseUrl)}
+                      disabled={!baseUrl}
                     >
                       {copiedField === "baseUrl" ? (
                         <Check size={14} />
@@ -604,6 +617,26 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                     </button>
                   </div>
                 </label>
+                {lanBaseUrl && (
+                  <label>
+                    <span>{t("codex.localAccess.addressLan", "局域网")} Base URL</span>
+                    <div className="codex-api-service-copy-row">
+                      <code>{lanBaseUrl}</code>
+                      <button
+                        type="button"
+                        className="folder-icon-btn"
+                        aria-label={`${t("common.copy", "复制")} ${t("codex.localAccess.addressLan", "局域网")} Base URL`}
+                        onClick={() => void handleCopy("lanBaseUrl", lanBaseUrl)}
+                      >
+                        {copiedField === "lanBaseUrl" ? (
+                          <Check size={14} />
+                        ) : (
+                          <Copy size={14} />
+                        )}
+                      </button>
+                    </div>
+                  </label>
+                )}
                 <label>
                   <span>
                     {t(
@@ -1125,6 +1158,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                         </div>
                       </div>
                     </div>
+                    <CodexKeyBudgetSummary apiKey={apiKey} />
                     <button
                       type="button"
                       className="codex-api-service-key-advanced-toggle"
@@ -1157,6 +1191,8 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                     </button>
                     {policyExpanded && (
                       <div className="codex-api-service-key-policy">
+                        <CodexKeyBudgetEditor value={policyDraft.budget} disabled={busy}
+                          onChange={budget => setApiKeyPolicyDrafts(drafts => ({ ...drafts, [apiKey.id]: { ...(drafts[apiKey.id] ?? policyDraft), budget } }))} />
                         <div className="api-key-token-limit-editor">
                           <label>
                             <span>
@@ -1562,6 +1598,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
 
         {activeTab === "accounts" && (
           <div className="codex-api-service-grid accounts">
+            {overload.error && <p role="status">{t("codex.overload.countUnavailable")}</p>}
             <section className="codex-api-service-panel">
               <div className="codex-api-service-panel-head">
                 <h2>
@@ -1668,6 +1705,13 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                           <span>
                             {formatUsdCost(stat?.usage.estimatedCostUsd ?? 0)}
                           </span>
+                          {overload.counts && (
+                            <button type="button" className="btn btn-secondary btn-sm"
+                              title={t("codex.overload.countHint")}
+                              onClick={() => showOverloadHistory(account.id, maskAccountText(presentation.displayName))}>
+                              {t("codex.overload.count", { count: overload.counts[account.id] ?? 0 })}
+                            </button>
+                          )}
                           <span>
                             {t("codex.apiService.accountHealth.failures", {
                               count: health?.consecutiveFailures ?? 0,
@@ -1756,6 +1800,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                   {t("codex.apiService.routing.saveOptions", "保存选项")}
                 </button>
               </div>
+              <CodexOverloadRetrySetting showProgress />
               <div className="codex-api-service-config-list codex-api-service-routing-form">
                 <label>
                   <span>{t("codex.localAccess.routingLabel", "调度策略")}</span>
@@ -1994,6 +2039,29 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                   </button>
                 ))}
               </div>
+              {collection && (
+                <div className="codex-api-service-panel-stack">
+                  <CodexImageModelSelect
+                    model={collection.imageGenerationModel}
+                    models={collection.imageGenerationModels}
+                    deletedModels={collection.imageGenerationDeletedModels}
+                    catalogUpdatedAt={collection.updatedAt}
+                    mainModel={collection.imageGenerationMainModel}
+                    disabled={busy}
+                    onSave={(model) => codexLocalAccessService.updateCodexLocalAccessImageGenerationModel(model).then(setState)}
+                    onSaveMainModel={(model) => codexLocalAccessService.updateCodexLocalAccessImageGenerationMainModel(model).then(setState)}
+                  />
+                  <CodexImageForwardConfig
+                    accounts={accounts}
+                    accountIds={collection.imageGenerationAccountIds}
+                    imageGenerationModel={collection.imageGenerationModel}
+                    accountModels={collection.imageGenerationAccountModels}
+                    disabled={busy}
+                    maskAccountText={maskAccountText}
+                    onSave={(ids, models) => codexLocalAccessService.updateCodexLocalAccessImageGenerationAccounts(ids, models).then(setState)}
+                  />
+                </div>
+              )}
             </section>
             <div className="codex-api-service-panel-stack">
               <section className="codex-api-service-panel">
@@ -2093,7 +2161,10 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                     role="tab"
                     aria-selected={statsLogTab === tab.key}
                     className={statsLogTab === tab.key ? "active" : ""}
-                    onClick={() => setStatsLogTab(tab.key)}
+                    onClick={() => {
+                      setOverloadAccount(null);
+                      setStatsLogTab(tab.key);
+                    }}
                   >
                     {tab.label}
                   </button>
@@ -2125,6 +2196,18 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
               </div>
             </div>
 
+            {(statsLogTab === "accounts" || (statsLogTab === "logs" && overloadAccount)) && (
+              <CodexStatsRangePicker
+                value={statsRange}
+                range={statsTimeRange}
+                onPresetChange={handleStatsPresetChange}
+                onCustomApply={handleCustomStatsRangeApply}
+                disabled={busy}
+                error={statsRangeError}
+                compact
+              />
+            )}
+            {statsLogTab === "accounts" && overload.error && <p role="status">{t("codex.overload.countUnavailable")}</p>}
             {statsLogTab === "accounts" && (
               <div className="codex-api-service-account-grid codex-api-service-stats-account-grid">
                 {memberAccounts.length === 0 ? (
@@ -2169,6 +2252,13 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
                           <span>
                             {formatUsdCost(stat?.usage.estimatedCostUsd ?? 0)}
                           </span>
+                          {overload.counts && (
+                            <button type="button" className="btn btn-secondary btn-sm"
+                              title={t("codex.overload.countHint")}
+                              onClick={() => showOverloadHistory(account.id, maskAccountText(presentation.displayName))}>
+                              {t("codex.overload.count", { count: overload.counts[account.id] ?? 0 })}
+                            </button>
+                          )}
                           <span>
                             {t("codex.apiService.accountHealth.failures", {
                               count: health?.consecutiveFailures ?? 0,
@@ -2283,7 +2373,12 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
             )}
 
             {statsLogTab === "logs" && (
-              <CodexApiRequestLogs {...props} />
+              overloadAccount
+                ? <CodexOverloadHistory key={`${overloadAccount.id}:${statsTimeRange.startAt}:${statsTimeRange.endAt}`}
+                    accountId={overloadAccount.id} accountName={overloadAccount.name}
+                    startAt={statsTimeRange.startAt} endAt={statsTimeRange.endAt}
+                    onClose={() => setOverloadAccount(null)} />
+                : <CodexApiRequestLogs {...props} />
             )}
           </section>
         )}
@@ -2322,12 +2417,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
               </button>
             </div>
             <div className="modal-body codex-api-service-timeouts-body">
-              {timeoutsError && (
-                <div className="codex-api-service-message error">
-                  <CircleAlert size={15} />
-                  <span>{timeoutsError}</span>
-                </div>
-              )}
+              <ModalErrorMessage message={timeoutsError} className="codex-api-service-message error" />
               <section className="codex-api-service-timeout-section codex-api-service-timeout-preset-section">
                 <h3>
                   {t("codex.apiService.timeouts.presetTitle", "参数方案")}
@@ -2831,6 +2921,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
               </button>
             </div>
             <div className="modal-body codex-api-service-pricing-body">
+              <ModalErrorMessage message={accountModelRuleError} className="codex-api-service-message error" />
               <div className="codex-api-service-policy-actions">
                 <label className="codex-api-service-account-model-bulk">
                   <span>
@@ -3201,12 +3292,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
               </button>
             </div>
             <div className="modal-body codex-api-service-pricing-body">
-              {pricingError && (
-                <div className="codex-api-service-message error">
-                  <CircleAlert size={15} />
-                  <span>{pricingError}</span>
-                </div>
-              )}
+              <ModalErrorMessage message={pricingError} className="codex-api-service-message error" />
               {pricingRepriceProgress && (
                 <div
                   className={`codex-api-service-pricing-reprice is-${pricingRepriceProgress.phase}`}
@@ -3858,7 +3944,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
           codexLocalAccessService.rotateCodexLocalAccessApiKey().then(setState)
         }
         onRestartSidecar={handleRestartSidecar}
-        onKillPort={handleKillPort}
+        onRequestPortRecovery={openPortRecovery}
         onToggleEnabled={() => handleToggleEnabled(true)}
         onRecoverAccounts={handleRecoverAccounts}
         healthActionBusy={busy}

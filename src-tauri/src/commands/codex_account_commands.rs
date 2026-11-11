@@ -1055,10 +1055,6 @@ pub async fn force_refresh_codex_tokens(account_id: String) -> Result<CodexAccou
 ///
 /// 该操作只影响账号卡片上的客户端观测状态，不会修改 Token、远端授权状态或
 /// API 服务可用性判断。
-#[tauri::command]
-pub async fn codex_clear_client_auth_observation(account_id: String) -> Result<bool, String> {
-    codex_account::clear_client_auth_observation(&account_id).await
-}
 
 /// 切换 Codex 账号（包含 token 刷新检查）
 /// 默认实例切换到非 OAuth 账号时，关闭它的混合模型路由并释放对应的实例网关。
@@ -1091,6 +1087,23 @@ async fn disable_default_model_routing_for_non_oauth_switch() {
                 error
             ));
         }
+    }
+}
+
+async fn preserve_codex_local_projects_after_switch(instance_id: String, data_dir: PathBuf) {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_session_visibility::prepare_desktop_project_state_after_switch(&instance_id, &data_dir)
+            .map_err(|error| format!("instance_id={instance_id}, error={error}"))
+    })
+    .await;
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => logger::log_warn(&format!(
+            "[Codex Local Projects] bounded switch preparation deferred: {error}"
+        )),
+        Err(error) => logger::log_warn(&format!(
+            "[Codex Local Projects] switch preparation task failed: {error}"
+        )),
     }
 }
 
@@ -1147,7 +1160,6 @@ async fn switch_codex_account_internal(
     let initial_token_generation = initial_account.token_generation;
     let user_config = config::get_user_config();
     let launch_after_switch = launch_after_switch.unwrap_or(user_config.codex_launch_on_switch);
-    // client_auth_status 仅记录官方客户端运行后的观测结果，不参与切号或启动拦截。
     // 真实 Token Authority 失败仍由 prepare/switch 流程返回结构化授权错误。
     if launch_after_switch {
         let default_settings = crate::modules::codex_instance::load_default_settings()?;
@@ -1329,6 +1341,13 @@ async fn switch_codex_account_internal(
             return Err(formatted_error);
         }
     };
+    if !launch_after_switch {
+        preserve_codex_local_projects_after_switch(
+            crate::commands::codex_instance::DEFAULT_INSTANCE_ID.to_string(),
+            codex_account::get_codex_home(),
+        )
+        .await;
+    }
     if is_reauth_handoff {
         let quota_account_id = account.id.clone();
         tokio::spawn(async move {
@@ -2004,7 +2023,7 @@ pub async fn refresh_codex_subscription_info(
     app: AppHandle,
     account_id: String,
 ) -> Result<CodexAccount, String> {
-    let result = codex_quota::refresh_account_subscription_info(&account_id, true).await;
+    let result = Box::pin(codex_quota::refresh_account_subscription_info(&account_id)).await;
     if result.is_ok() {
         let _ = crate::modules::tray::update_tray_menu(&app);
     }
@@ -2307,6 +2326,7 @@ pub fn add_codex_account_with_api_key(
     api_vision_routing_model: Option<String>,
     account_name: Option<String>,
     api_model_context_windows: Option<std::collections::HashMap<String, i64>>,
+    api_auth_scheme: Option<String>,
 ) -> Result<CodexAccount, String> {
     let account = codex_account::upsert_api_key_account(
         api_key,
@@ -2323,6 +2343,7 @@ pub fn add_codex_account_with_api_key(
         api_vision_routing_model,
         account_name,
         api_model_context_windows,
+        api_auth_scheme.clone(),
     )?;
     codex_account::load_account(&account.id).ok_or_else(|| "账号保存后无法读取".to_string())
 }
@@ -2432,6 +2453,7 @@ pub async fn update_codex_api_key_credentials(
     api_vision_routing_model: Option<String>,
     account_name: Option<String>,
     api_model_context_windows: Option<std::collections::HashMap<String, i64>>,
+    api_auth_scheme: Option<String>,
 ) -> Result<CodexAccount, String> {
     let account = tauri::async_runtime::spawn_blocking(move || {
         codex_account::update_api_key_credentials(
@@ -2450,6 +2472,7 @@ pub async fn update_codex_api_key_credentials(
             api_vision_routing_model,
             account_name,
             api_model_context_windows,
+            api_auth_scheme.clone(),
             api_sync_model_catalog_to_api_service,
         )
     }).await.map_err(|error| format!("更新 API Key 任务失败: {}", error))??;
@@ -2472,6 +2495,7 @@ pub async fn sync_codex_api_key_provider_accounts(
     api_model_vision_support: Option<std::collections::HashMap<String, bool>>,
     api_vision_routing_model: Option<String>,
     api_model_context_windows: Option<std::collections::HashMap<String, i64>>,
+    api_auth_scheme: Option<String>,
 ) -> Result<usize, String> {
     let count = tauri::async_runtime::spawn_blocking(move || {
         codex_account::sync_api_key_provider_accounts(
@@ -2487,6 +2511,7 @@ pub async fn sync_codex_api_key_provider_accounts(
             api_model_vision_support.unwrap_or_default(),
             api_vision_routing_model,
             api_model_context_windows,
+            api_auth_scheme.clone(),
         )
     })
     .await

@@ -363,6 +363,7 @@ async fn start(options: Options) -> Running {
                 url,
                 profile_dir,
                 native_fast,
+                false,
                 quota_compat,
                 api_key_auth_verified,
                 api_service,
@@ -376,6 +377,7 @@ async fn start(options: Options) -> Running {
                 url,
                 profile_dir,
                 native_fast,
+                false,
                 quota_compat,
                 api_key_auth_verified,
                 api_service,
@@ -1594,6 +1596,7 @@ async fn disabled_and_stopped_sessions_do_not_connect() {
         false,
         false,
         false,
+        false,
         None,
         receiver
     )
@@ -1604,6 +1607,7 @@ async fn disabled_and_stopped_sessions_do_not_connect() {
         "invalid".to_string(),
         PathBuf::new(),
         true,
+        false,
         true,
         true,
         false,
@@ -1803,13 +1807,7 @@ async fn page_worker_waits_for_browser_completion_before_replacing_its_owner() {
 }
 
 #[test]
-fn fallback_speed_metadata_uses_only_bundled_ultrafast_models() {
-    let fallbacks = service_tier_fallbacks().as_object().unwrap();
-    assert_eq!(fallbacks.len(), 2);
-    for model in ["gpt-6.1-sol", "gpt-6-astra"] {
-        assert_eq!(fallbacks[model]["id"], "ultrafast");
-        assert_eq!(fallbacks[model]["description"], "");
-    }
-    let runtime = bootstrap(true, false, true, false, "catalog-test");
-    assert!(runtime.contains("\"serviceTierFallbacks\""));
+fn automatic_fast_does_not_supply_catalog_fallbacks() {
+    let runtime = bootstrap(true, false, false, true, false, "catalog-test");
+    assert!(!runtime.contains("serviceTierFallbacks"));
 }

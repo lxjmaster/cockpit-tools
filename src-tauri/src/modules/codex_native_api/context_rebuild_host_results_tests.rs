@@ -108,12 +108,7 @@ async fn host_results_invalid_ids_reach_upstream_without_unlocking_cross_account
         "upstream_marker":"original-host-result-diagnostic"
     });
     let event = json!({"type":"error","status":400,"error":upstream_error});
-    let fixture = Fixture::new(
-        true,
-        vec![Step::RawEvents(vec![event]); 8],
-        vec![],
-    )
-    .await;
+    let fixture = Fixture::new(true, vec![Step::RawEvents(vec![event]); 8], vec![]).await;
     for (index, (namespace, id)) in ["codex_app", "codex_tui"]
         .into_iter()
         .flat_map(|namespace| {
@@ -154,7 +149,9 @@ async fn host_results_invalid_ids_reach_upstream_without_unlocking_cross_account
             "native_rebuild_history_v1",
         ] {
             let count: i64 = db
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             assert_eq!(count, 0, "a rejected host result must not publish {table}");
         }

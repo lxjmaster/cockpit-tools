@@ -154,11 +154,15 @@ pub struct CodexSessionVisibilityRepairItem {
     pub metadata_rebuild_failed: bool,
     pub backup_dir: Option<String>,
     pub running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_projection_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionVisibilityRepairSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_repair_warning: Option<String>,
     pub instance_count: usize,
     pub mutated_instance_count: usize,
     pub changed_rollout_file_count: usize,
@@ -178,6 +182,9 @@ pub struct CodexSessionVisibilityRepairSummary {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_projection_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_project_recovery: Option<local_projects::Counts>,
+    pub local_project_recovery_deferred: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +235,7 @@ struct RepairTargetSelection {
     target_provider: Option<String>,
     session_ids: Option<HashSet<String>>,
     instance_ids: Option<HashSet<String>>,
+    prepare_desktop_projects: bool,
 }
 
 impl RepairTargetSelection {
@@ -256,6 +264,7 @@ impl RepairTargetSelection {
             .filter(|value| !value.is_empty())
             .collect::<HashSet<_>>();
         Ok(Self {
+            prepare_desktop_projects: false,
             target_provider,
             session_ids: if session_ids.is_empty() {
                 None
@@ -473,6 +482,7 @@ pub fn repair_session_visibility_quick_for_instance(
     instance_id: &str,
     instance_name: &str,
     data_dir: &Path,
+    launch_desktop: bool,
 ) -> Result<CodexSessionVisibilityRepairSummary, String> {
     let _repair_guard = acquire_session_visibility_repair_lock()?;
     let started = std::time::Instant::now();
@@ -489,7 +499,10 @@ pub fn repair_session_visibility_quick_for_instance(
             ),
             None,
             None,
-            RepairTargetSelection::default(),
+            RepairTargetSelection {
+                prepare_desktop_projects: launch_desktop,
+                ..Default::default()
+            },
             vec![CodexSyncInstance {
                 id: instance_id.to_string(),
                 name: instance_name.to_string(),
@@ -623,7 +636,7 @@ fn repair_session_visibility_across_instances_with_options(
     )
 }
 
-fn repair_session_visibility_for_instances_with_options(
+fn repair_provider_visibility_for_instances_with_options(
     options: CodexSessionVisibilityRepairOptions,
     run_id: Option<String>,
     progress_reporter: ProgressReporter<'_>,
@@ -816,6 +829,7 @@ fn repair_session_visibility_for_instances_with_options(
                 metadata_rebuild_failed: false,
                 backup_dir: None,
                 running,
+                history_projection_count: None,
             });
             continue;
         }
@@ -855,6 +869,7 @@ fn repair_session_visibility_for_instances_with_options(
                 metadata_rebuild_failed,
                 backup_dir: None,
                 running,
+                history_projection_count: None,
             });
             continue;
         }
@@ -1003,12 +1018,14 @@ fn repair_session_visibility_for_instances_with_options(
             metadata_rebuild_failed,
             backup_dir: Some(backup_dir_string),
             running,
+            history_projection_count: None,
         });
     }
 
     // Backup retention is maintenance, not a precondition for launching a
     // repaired instance. A large legacy backup tree must not delay this path.
-    if !options.dry_run && launch_visibility_budget().is_none() {
+    if !options.dry_run && launch_visibility_budget().is_none()
+        && !instances.iter().any(|instance| local_projects::has_pending(&instance.data_dir)) {
         report_repair_progress(
             progress_reporter,
             &run_id,
@@ -1083,6 +1100,9 @@ fn repair_session_visibility_for_instances_with_options(
         backup_dirs,
         message,
         history_projection_count: None,
+        history_repair_warning: None,
+        local_project_recovery: None,
+        local_project_recovery_deferred: false,
     };
     report_repair_progress(
         progress_reporter,
