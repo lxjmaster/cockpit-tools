@@ -13,6 +13,7 @@ use tokio::sync::watch;
 use tokio::time::{timeout, Instant};
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream};
+use super::rspack_speed_assets::Assets;
 
 const GUARD_SCRIPT: &str = include_str!("startup_guard.js");
 const PRELOAD_SCRIPT: &str = include_str!("startup_preload.js");
@@ -89,6 +90,8 @@ const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(35);
 const RETRY_DELAYS: [u64; 5] = [1, 2, 5, 10, 15];
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type ContextKey = (u64, i64);
+#[path = "service_tier_live.rs"]
+mod service_tier_live;
 #[path = "startup_draft.rs"]
 mod startup_draft;
 
@@ -112,6 +115,7 @@ pub(super) fn browser_preload_source(
     api_key_auth_verified: bool,
     api_service: bool,
     owner: &str,
+    speed_assets: Option<&Assets>,
 ) -> String {
     guard_document_install(
         &format!(
@@ -122,7 +126,8 @@ pub(super) fn browser_preload_source(
                 quota_compat,
                 api_key_auth_verified,
                 api_service,
-                owner
+                owner,
+                speed_assets,
             )
         ),
         "",
@@ -184,6 +189,7 @@ struct Session {
     registrations: HashSet<String>,
     pending_additions: HashSet<u64>,
     pending_removals: HashMap<u64, String>,
+    service_tier_notice: Option<i64>,
 }
 
 impl Session {
@@ -281,6 +287,7 @@ impl Session {
             Some("Runtime.executionContextsCleared") => {
                 self.contexts.clear();
                 self.generation += 1;
+                self.service_tier_notice = None;
             }
             Some("Runtime.executionContextDestroyed") => {
                 if let Some(id) = event
@@ -312,6 +319,12 @@ impl Session {
                         self.main_frame = Some(id.to_string());
                     }
                 }
+            }
+            Some("Runtime.bindingCalled")
+                if event.pointer("/params/name").and_then(Value::as_str) == Some(service_tier_live::NOTICE)
+                    && event.pointer("/params/payload").and_then(Value::as_str) == Some("active") =>
+            {
+                self.service_tier_notice = event.pointer("/params/executionContextId").and_then(Value::as_i64);
             }
             _ => {}
         }
@@ -385,6 +398,9 @@ struct Registration {
     live_quota: bool,
     live_quota_armed: bool,
     is_rspack: bool,
+    live_speed: bool,
+    live_speed_attempt: Attempt,
+    live_speed_armed: bool,
     nonce: String,
     startup: Option<Arc<StartupReload>>,
     draft_file: PathBuf,
@@ -423,9 +439,10 @@ impl Registration {
     }
 
     async fn report(&mut self, phase: &str, reason: &str) {
-        let state = if self.active && self.capability_only {
+        let active = self.active || phase == "speed" && reason == "native-speed-menu-live";
+        let state = if active && self.capability_only {
             "active-capability"
-        } else if self.active {
+        } else if active {
             "active"
         } else if self.script_id.is_some() {
             "next-document"
@@ -453,7 +470,7 @@ impl Registration {
         if let Some(prediction_reason) = &self.prediction_unsupported_reason {
             message.push_str(&format!("; predictions=unsupported:{prediction_reason}"));
         }
-        if self.active {
+        if active {
             crate::modules::logger::log_info(&message);
         } else {
             crate::modules::logger::log_warn(&message);
@@ -557,8 +574,9 @@ fn bootstrap(
     api_key_auth_verified: bool,
     api_service: bool,
     owner: &str,
+    speed_assets: Option<&Assets>,
 ) -> String {
-    let options = json!({"nativeFast":native_fast,"nativePredictions":native_predictions,"quotaCompat":quota_compat,"apiKeyAuthVerified":api_key_auth_verified,"apiService":api_service,"owner":owner});
+    let options = json!({"nativeFast":native_fast,"nativePredictions":native_predictions,"quotaCompat":quota_compat,"apiKeyAuthVerified":api_key_auth_verified,"apiService":api_service,"owner":owner,"rspackSpeedAssets":speed_assets});
     let state = STATE_SCRIPT.replace("__COCKPIT_STATE_OPTIONS__", &options.to_string());
     format!("{state}\n{GUARD_SCRIPT}\n{SCRIPT}\n{PREDICTIONS_SCRIPT}\n{PREDICTIONS_RSPACK_SCRIPT}\n{SERVICE_RSPACK_SCRIPT}\n{QUOTA_SCRIPT}\n{QUOTA_CURRENT_SCRIPT}\n{QUOTA_STATE_SCRIPT}\n{QUOTA_START_SCRIPT}true;")
 }
@@ -628,7 +646,7 @@ async fn prepare_future_document(
         let result = registration
             .session()
             .evaluate(
-                "window.__cockpitServiceRspack.verifySpeedDocument()".to_string(),
+                "window.__cockpitServiceRspack.verifyRequestedDocument()".to_string(),
                 context,
                 PREPARE_TIMEOUT,
             )
@@ -638,7 +656,7 @@ async fn prepare_future_document(
             return Err("context-changed".to_string());
         }
         if result.get("ok").and_then(Value::as_bool) != Some(true) {
-            return Err(safe_reason(&result, "speed-contract-failed"));
+            return Err(safe_reason(&result, "rspack-contract-failed"));
         }
         return register_live_runtime(registration, context).await;
     }
@@ -1020,6 +1038,49 @@ async fn arm_live_quota_guard(
     Ok(())
 }
 
+async fn maintain_live_speed(registration: &mut Registration, context: ContextKey) {
+    if !registration.is_rspack || !registration.live_speed || registration.native_module_active {
+        return;
+    }
+    if registration.live_speed_armed {
+        if registration.session().service_tier_notice.take() == Some(context.1) {
+            registration.live_speed_armed = false;
+            service_tier_live::detach(registration.session()).await;
+            registration.report("speed", "native-speed-menu-live").await;
+        }
+        return;
+    }
+    if !registration.live_speed_attempt.due() {
+        return;
+    }
+    match service_tier_live::attach(registration.session(), context).await {
+        Ok(service_tier_live::Attach::Pending) => {
+            registration.live_speed_attempt.next = Some(Instant::now() + Duration::from_secs(1));
+        }
+        Ok(service_tier_live::Attach::Active) => {
+            registration.live_speed_attempt.done = true;
+            registration.report("speed", "native-speed-menu-live").await;
+        }
+        Ok(service_tier_live::Attach::Armed) => {
+            registration.live_speed_attempt.done = true;
+            registration.live_speed_armed = true;
+        }
+        Err(error) => {
+            let retryable = matches!(
+                error.as_str(),
+                "context-changed" | "speed-requirements-unavailable"
+            );
+            registration.live_speed_attempt.failed(retryable);
+            let reason = if error.starts_with("native enhancement ") {
+                command_reason(&error)
+            } else {
+                error
+            };
+            registration.report("speed", &reason).await;
+        }
+    }
+}
+
 async fn maintain(registration: &mut Registration) -> Result<(), String> {
     let Some(context) = registration.session().context() else {
         return Ok(());
@@ -1040,6 +1101,12 @@ async fn maintain(registration: &mut Registration) -> Result<(), String> {
         registration.capability_only = false;
         registration.live_quota_armed = false;
         registration.live_quota_attempt = Attempt::default();
+        if registration.live_speed_armed {
+            service_tier_live::detach(registration.session()).await;
+        }
+        registration.live_speed_armed = false;
+        registration.live_speed_attempt = Attempt::default();
+        registration.session().service_tier_notice = None;
         registration.next_state_read = None;
         registration.last_diagnostic = None;
         registration.activation_until = registration
@@ -1079,6 +1146,11 @@ async fn maintain(registration: &mut Registration) -> Result<(), String> {
             return Ok(());
         }
         registration.is_rspack = probe.get("rspack").and_then(Value::as_bool) == Some(true);
+        if registration.is_rspack && registration.live_speed {
+            // Rspack speed support is attached to the running picker. A
+            // compatibility or transport failure cannot reload the client.
+            registration.startup = None;
+        }
         let installed = probe
             .get("installed")
             .and_then(Value::as_bool)
@@ -1133,6 +1205,7 @@ async fn maintain(registration: &mut Registration) -> Result<(), String> {
                 }
             }
         }
+        maintain_live_speed(registration, context).await;
         return Ok(());
     }
     if registration.script_id.is_none()
@@ -1177,6 +1250,7 @@ async fn maintain(registration: &mut Registration) -> Result<(), String> {
     {
         try_startup_reload(registration, context).await;
     }
+    maintain_live_speed(registration, context).await;
     Ok(())
 }
 
@@ -1213,11 +1287,14 @@ pub(super) async fn run(
     preload_first: bool,
     startup: Option<Arc<StartupReload>>,
     stop: watch::Receiver<bool>,
+    speed_assets: Option<&Assets>,
 ) -> Result<(), String> {
     // The profile reader has verified either pure API authentication or an
     // independent API route with OAuth retained. Only those profiles can reuse
     // a launch transaction's single fresh-document permission.
-    let verified_api_route = (native_fast || native_predictions) && api_key_auth_verified || quota_compat;
+    // The profile reader has already verified the API route for predictions.
+    let verified_api_route =
+        (native_fast && api_key_auth_verified) || native_predictions || quota_compat;
     let startup = if api_service && (!verified_api_route || !native_fast && !native_predictions) {
         None
     } else {
@@ -1242,6 +1319,7 @@ pub(super) async fn run(
         startup,
         stop,
         live_quota,
+        speed_assets,
     )
     .await
 }
@@ -1258,6 +1336,7 @@ async fn run_with_live_quota(
     startup: Option<Arc<StartupReload>>,
     mut stop: watch::Receiver<bool>,
     live_quota: bool,
+    speed_assets: Option<&Assets>,
 ) -> Result<(), String> {
     if !native_fast && !native_predictions && !quota_compat && !api_service || *stop.borrow() {
         return Ok(());
@@ -1292,6 +1371,7 @@ async fn run_with_live_quota(
         api_key_auth_verified,
         api_service,
         &owner,
+        speed_assets,
     );
     let startup_runtime = guard_document_install(&format!("{runtime}\n{PRELOAD_SCRIPT}"), "");
     let browser_snapshot = json!({"owner":format!("preload-{browser_port}"),
@@ -1314,6 +1394,7 @@ async fn run_with_live_quota(
             registrations: HashSet::new(),
             pending_additions: HashSet::new(),
             pending_removals: HashMap::new(),
+            service_tier_notice: None,
         }),
         script_id: None,
         owner,
@@ -1324,6 +1405,9 @@ async fn run_with_live_quota(
         live_quota,
         live_quota_armed: false,
         is_rspack: false,
+        live_speed: native_fast && api_key_auth_verified,
+        live_speed_attempt: Attempt::default(),
+        live_speed_armed: false,
         nonce: uuid::Uuid::new_v4().to_string(),
         startup,
         draft_file: profile_dir.join(".codex-global-state.json"),

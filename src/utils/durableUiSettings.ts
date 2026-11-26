@@ -62,6 +62,12 @@ const settings = {
   'agtools.codex.top_layout.v1': {
     valid: topLayout, event: 'codex:top-layout-updated',
   },
+  'agtools.t3code.top_layout.v1': {
+    valid: topLayout, event: 't3code:top-layout-updated', portable: false,
+  },
+  'agtools.t3code.accounts_view_mode': {
+    valid: (value: string) => ['list', 'grid'].includes(value),
+  },
   'agtools.codex_show_code_review_quota': {
     valid: bool, event: 'agtools:codex-code-review-quota-visibility-changed', detail: (value: string | null) => value === '1',
   },
@@ -95,6 +101,9 @@ const settings = {
   },
   'agtools.codex.api_service.request_log_page_size.v1': {
     valid: (value: string) => ['20', '50', '100'].includes(value),
+  },
+  'codex.apiService.highTokenThreshold': {
+    valid: (value: string) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0,
   },
   'codex.apiService.logColumns.v1': {
     valid: (value: string) => value !== 'null' && jsonArrayOrNull(value),

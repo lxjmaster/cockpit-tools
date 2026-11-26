@@ -163,6 +163,10 @@ async fn refresh_codex_api_key_usage_for_menu(
         usage_api_key,
         Some(true),
         Some(account_id),
+        provider.as_ref().and_then(|value| value.get("customUsage"))
+            .filter(|value| !value.is_null())
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose().map_err(|_| "PROVIDER_CUSTOM_USAGE_SETTINGS_INVALID")?,
     )
     .await;
     let summary = match summary {
@@ -425,12 +429,12 @@ fn spawn_switch_account(platform: PlatformId, account_id: String) {
                 .map(|_| ()),
             PlatformId::Grok => commands::grok::switch_grok_account(app, account_id).map(|_| ()),
             PlatformId::Codebuddy => {
-                commands::codebuddy::inject_codebuddy_to_vscode(app, account_id)
+                commands::codebuddy::inject_codebuddy_to_vscode(app, account_id, None)
                     .await
                     .map(|_| ())
             }
             PlatformId::CodebuddyCn => {
-                commands::codebuddy_cn::inject_codebuddy_cn_to_vscode(app, account_id, None)
+                commands::codebuddy_cn::inject_codebuddy_cn_to_vscode(app, account_id, None, None)
                     .await
                     .map(|_| ())
             }

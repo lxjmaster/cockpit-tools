@@ -17,10 +17,10 @@ const BIGMODEL_REDIRECT_URI: &str = "zcode://oauth/callback";
 const ZAI_AUTHORIZE_URL: &str = "https://chat.z.ai/api/oauth/authorize";
 const ZAI_USER_INFO_URL: &str = "https://chat.z.ai/api/oauth/userinfo";
 const ZAI_BUSINESS_LOGIN_URL: &str = "https://api.z.ai/api/auth/z/login";
-// OAuth redirect contract verified against ZCode 3.16.3. Both providers now
+// OAuth redirect contract verified against ZCode 3.18.2. Both providers now
 // return through the official web bridge to the shared desktop callback.
 const DESKTOP_OAUTH_REDIRECT_URI: &str =
-    "https://zcode.z.ai/app/oauth/login?redirect=zcode%3A%2F%2Foauth%2Fcallback&app_version=3.16.3";
+    "https://zcode.z.ai/app/oauth/login?redirect=zcode%3A%2F%2Foauth%2Fcallback&app_version=3.18.2";
 const ZAI_CLIENT_ID: &str = "client_P8X5CMWmlaRO9gyO-KSqtg";
 const ZCODE_OAUTH_WINDOW_LABEL: &str = "zcode-oauth";
 
@@ -365,13 +365,20 @@ fn parse_token_envelope(
         &[
             &["data", "bigmodel", "refresh_token"],
             &["data", "bigmodel", "refreshToken"],
+            &["data", "refresh_token"],
+            &["data", "refreshToken"],
         ],
     );
+    let expires_in = token_response
+        .pointer("/data/expires_in")
+        .or_else(|| token_response.pointer("/data/expiresIn"))
+        .or_else(|| token_response.pointer("/data/bigmodel/expires_in"))
+        .and_then(Value::as_i64);
     Ok(OAuthTokenEnvelope {
         zcode_jwt_token,
         provider_access_token,
         refresh_token,
-        expires_in: None,
+        expires_in,
         user_info: json!({}),
     })
 }
@@ -449,7 +456,7 @@ async fn exchange_callback(
         (
             envelope.provider_access_token,
             envelope.refresh_token,
-            None,
+            envelope.expires_in.map(|seconds| now_ts() + seconds),
             envelope.user_info,
         )
     };
@@ -500,6 +507,7 @@ async fn exchange_callback(
         zcode_jwt_token,
         api_key: None,
         expires_at,
+        team_plan: None,
         plan_type: None,
         quota_total: None,
         quota_used: None,
@@ -710,6 +718,25 @@ mod tests {
         assert_eq!(parsed.provider_access_token, "business-access");
         assert_eq!(parsed.refresh_token.as_deref(), Some("refresh-token"));
         assert!(parsed.expires_in.is_none());
+    }
+
+    #[test]
+    fn parses_bigmodel_top_level_refresh_token_and_expiry() {
+        let parsed = parse_token_envelope(
+            "bigmodel",
+            &json!({
+                "data": {
+                    "token": "zcode-jwt",
+                    "accessToken": "business-access",
+                    "refreshToken": "top-level-refresh",
+                    "expiresIn": 7200
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(parsed.provider_access_token, "business-access");
+        assert_eq!(parsed.refresh_token.as_deref(), Some("top-level-refresh"));
+        assert_eq!(parsed.expires_in, Some(7200));
     }
 
     #[test]

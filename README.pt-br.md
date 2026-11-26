@@ -293,7 +293,7 @@ Acesse a [página de lançamentos do GitHub](https://github.com/jlcodes99/cockpi
 
 *   **macOS**: `.dmg` (Apple Silicon & Intel)
 *   **Windows**: `.msi` (Recommended) or `.exe`
-*   **Linux**: `.deb` (Debian/Ubuntu), `.rpm`, or `.AppImage` (Universal)
+*   **Linux**: `.deb` (Debian/Ubuntu), `.rpm` ou `.AppImage`
 
 ### Opção B: Instalar com o Homebrew (macOS)
 
@@ -361,12 +361,6 @@ npm run tauri build
 ## Histórico do Star
 
 [![Gráfico do Histórico do Star](https://api.star-history.com/svg?repos=jlcodes99/cockpit-tools&type=Date)](https://star-history.com/#jlcodes99/cockpit-tools&Date)
-
----
-
-## Comunidade
-
-Grupo de bate-papo no Telegram recém-criado: [Junte-se ao grupo](https://t.me/+Y8gMv4SlZUU2MWY1)
 
 ---
 

@@ -18,7 +18,7 @@ const PINNED_MODEL_IDS: &[&str] = &[
 
 pub fn start_background_sync() {
     tauri::async_runtime::spawn(async {
-        crate::modules::codex_model_catalog::initialize().await;
+        crate::modules::codex_model_catalog::refresh().await;
         let mut pending_profiles = false;
         refresh_once(&mut pending_profiles).await;
         let mut interval = tokio::time::interval(MODEL_CATALOG_REFRESH_INTERVAL);

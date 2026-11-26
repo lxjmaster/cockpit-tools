@@ -1009,6 +1009,9 @@ fn build_quota_data_from_response(
     quota_summary: Option<serde_json::Value>,
 ) -> QuotaData {
     let mut quota_data = QuotaData::new();
+    quota_data.quota_summary_groups = quota_summary
+        .as_ref()
+        .and_then(crate::models::quota::QuotaSummaryGroup::parse);
 
     for (name, info) in quota_response.models {
         let display_name = info
@@ -1023,7 +1026,7 @@ fn build_quota_data_from_response(
                 .map(|f| (f * 100.0) as i32)
                 .unwrap_or(0);
             let reset_time = quota_info.reset_time.unwrap_or_default();
-            if name.contains("gemini") || name.contains("claude") || name.contains("argon") || name.contains("gpt") {
+            if name.contains("gemini") || name.contains("claude") || name.contains("argon") || name.contains("carbon") || name.contains("gpt") {
                 quota_data.add_model(name, display_name, percentage, reset_time);
             }
         }

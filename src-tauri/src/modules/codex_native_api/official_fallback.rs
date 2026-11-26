@@ -2,15 +2,92 @@
 use super::{contract::OfficialFallbackFailure, diagnostics::AuthorizationFallbackTrace};
 use serde_json::Value;
 
+/// Older official sharing responses can carry only this quota message inside a
+/// generic error envelope. Only callers handling an official response use this.
+pub(super) fn normalize_sharing_quota_error(value: &mut Value) -> bool {
+    let path = ["/response/error", "/error", "/body/error", "/detail"]
+        .into_iter()
+        .find(|path| value.pointer(path).is_some_and(|error| !error.is_null()));
+    let Some(error) = (if let Some(path) = path {
+        value.pointer_mut(path).and_then(Value::as_object_mut)
+    } else if value.get("response").is_none()
+        && value.get("type").is_none_or(|kind| {
+            kind.is_null()
+                || kind.as_str().is_some_and(|kind| {
+                    matches!(
+                        kind.trim(),
+                        ""
+                            | "error"
+                            | "response.error"
+                            | "invalid_request_error"
+                            | "rate_limit_error"
+                            | "server_error"
+                            | "usage_limit_error"
+                    )
+                })
+        })
+    {
+        value.as_object_mut()
+    } else {
+        None
+    }) else {
+        return false;
+    };
+    if ["code", "type"].iter().any(|field| {
+        error.get(*field).is_some_and(|value| {
+            !value.is_null()
+                && !value.as_str().is_some_and(|raw| {
+                    matches!(
+                        raw.trim(),
+                        ""
+                            | "error"
+                            | "response.error"
+                            | "invalid_request_error"
+                            | "rate_limit_error"
+                            | "rate_limit_exceeded"
+                            | "server_error"
+                            | "usage_limit_error"
+                            | "usage_limit_reached"
+                            | "insufficient_quota"
+                            | "quota_exceeded"
+                            | "subscription_sharing_usage_limit_exceeded"
+                    )
+                })
+        })
+    }) {
+        return false;
+    }
+    let Some(message) = error.get("message").and_then(Value::as_str) else {
+        return false;
+    };
+    let trimmed = message.trim().trim_end_matches('.');
+    let recognized = matches!(
+        trimmed,
+        "The ChatGPT user has reached their Subscription Sharing usage limit"
+            | "The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again after their usage limit resets or use an API key instead"
+    ) || trimmed
+        .strip_prefix("The ChatGPT user has reached their Subscription Sharing usage limit")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'));
+    if recognized {
+        error.insert(
+            "code".into(),
+            Value::String("subscription_sharing_usage_limit_exceeded".into()),
+        );
+    }
+    recognized
+}
+
 pub(super) fn code(value: &Value) -> Option<String> {
     let paths = [
         "/error/code",
         "/response/error/code",
         "/body/error/code",
+        "/detail/code",
         "/code",
         "/error/type",
         "/response/error/type",
         "/body/error/type",
+        "/detail/type",
         "/type",
     ];
     let official = paths
@@ -156,6 +233,37 @@ pub(super) fn trace(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sharing_quota_message_requires_an_exact_error_without_conflicting_code() {
+        let message = "The ChatGPT user has reached their Subscription Sharing usage limit.";
+        let full_message = "The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again after their usage limit resets or use an API key instead";
+        let mut rejection = json!({"error":{"message":message,"type":"invalid_request_error"}});
+        assert!(normalize_sharing_quota_error(&mut rejection));
+        assert!(normalize_sharing_quota_error(&mut rejection));
+        assert_eq!(explicit_rejection(&rejection), Some(("subscription_sharing_usage_limit_exceeded".into(), 429)));
+        for mut recognized in [
+            json!({"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":full_message}}}),
+            json!({"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","type":"rate_limit_error","message":full_message}}}),
+            json!({"type":"error","code":null,"message":full_message,"param":null}),
+        ] {
+            assert!(normalize_sharing_quota_error(&mut recognized), "{recognized}");
+            assert_eq!(
+                explicit_rejection(&recognized),
+                Some(("subscription_sharing_usage_limit_exceeded".into(), 429)),
+                "{recognized}"
+            );
+        }
+        for mut unrelated in [
+            json!({"error":{"message":message,"code":"invalid_value"}}),
+            json!({"error":{"message":format!("Prompt quoted: {message}")}}),
+            json!({"type":"response.output_text.delta","delta":message}),
+        ] {
+            let before = unrelated.clone();
+            assert!(!normalize_sharing_quota_error(&mut unrelated));
+            assert_eq!(unrelated, before);
+        }
+    }
 
     #[test]
     fn precise_official_rejection_outweighs_generic_envelope() {

@@ -45,7 +45,7 @@ fn backup_path(path: &Path) -> PathBuf {
     backup.into()
 }
 
-fn read_at<T: DeserializeOwned>(root: &Path, path: &Path) -> Result<T, String> {
+pub(super) fn read_at<T: DeserializeOwned>(root: &Path, path: &Path) -> Result<T, String> {
     let content = fs::read_to_string(path).map_err(|error| format!("读取账号详情失败: {error}"))?;
     decode(root, &content).or_else(|error| {
         // Keep recovery reads non-mutating. A missing primary is an absence, not an old backup.
@@ -66,7 +66,7 @@ pub(crate) fn read_account_file<T: DeserializeOwned>(path: &Path) -> Result<T, S
     read_at(&account::get_data_dir()?, path)
 }
 
-fn write_at<T: Serialize>(
+pub(super) fn write_at<T: Serialize>(
     root: &Path,
     path: &Path,
     kind: &str,
@@ -352,7 +352,11 @@ mod tests {
                         .unwrap();
                     fixture["token_encrypted"] = json!({"version":1, "algorithm":"AES-256-GCM", "key_id":"local-account-token-v1", "nonce":STANDARD.encode(nonce), "ciphertext":STANDARD.encode(encrypted), "encrypted_at":1});
                     fixture["two_factor_secret"] = json!("desktop-fixture-secret");
-                    fixture["quota"] = json!({"models":[], "last_updated":10, "quota_summary_stale":true, "quota_summary_updated_at":8, "is_gcp_tos":true, "project_id":"fixture-project"});
+                    fixture["quota"] = json!({
+                        "models":[{"name":"3p-weekly", "percentage":0, "reset_time":"", "summary_exhausted":true}],
+                        "last_updated":10, "quota_summary_stale":true, "quota_summary_updated_at":8,
+                        "is_gcp_tos":true, "project_id":"fixture-project"
+                    });
                 }
                 "codex" => {
                     fixture["tokens"] =
@@ -397,6 +401,7 @@ mod tests {
                     assert_eq!(account["two_factor_secret"], "desktop-fixture-secret");
                     assert_eq!(account["quota"]["quota_summary_stale"], true);
                     assert_eq!(account["quota"]["quota_summary_updated_at"], 8);
+                    assert_eq!(account["quota"]["models"][0]["summary_exhausted"], true);
                     assert_eq!(account["quota"]["is_gcp_tos"], true);
                     assert_eq!(account["quota"]["project_id"], "fixture-project");
                 }

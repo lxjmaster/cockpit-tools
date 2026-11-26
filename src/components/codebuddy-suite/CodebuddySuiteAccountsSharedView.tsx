@@ -89,7 +89,7 @@ export interface CodebuddySuiteAccountsPlatformConfig<
 > {
   pageClassName: string;
   accountPlatformKey?: string;
-  quickSettingsType?: "codebuddy_cn" | "workbuddy" | "zcode" | "grok" | "minimaxcode";
+  quickSettingsType?: "codebuddy_cn" | "workbuddy" | "zcode" | "t3code" | "grok" | "minimaxcode";
   /** 签到按钮 tooltip 的 i18n key，默认沿用 workbuddy */
   checkinModalTitleKey?: string;
   checkinModalTitleDefault?: string;
@@ -109,6 +109,7 @@ export interface CodebuddySuiteAccountsPlatformConfig<
   noAccountsDefault: string;
   addAccountTitleKey: string;
   addAccountTitleDefault: string;
+  hideOauthTab?: boolean;
   oauthDescKey: string;
   allowOauthRestartOnError?: boolean;
   oauthDescDefault: string;
@@ -175,10 +176,13 @@ export interface CodebuddySuiteAccountsPlatformConfig<
     t: (key: string, defaultValue?: string) => string,
   ) => QuotaCategoryGroup[];
   hasQuotaData: (account: TAccount, groups: QuotaCategoryGroup[]) => boolean;
+  getQuotaUpdatedAtMs?: (account: TAccount) => number | null;
+  usageUnavailableText?: string;
   renderQuotaSummary?: (account: TAccount) => ReactNode;
   renderQuotaAction?: (account: TAccount) => ReactNode;
   /** 积分到期时间（用于卡片时间区的「到期时间」选项）；不实现则该项不显示 */
   /** 卡片底部时间区旁的提示（如「包含即将到期的积分」） */
+  renderCardFooterHint?: (account: TAccount) => ReactNode;
   /** 卡片内、配额区上方的提示条（如模型受限警示） */
   renderCardNotice?: (account: TAccount) => ReactNode;
   /** 卡片操作按钮组里的额外按钮（如单账号探测） */
@@ -210,7 +214,6 @@ interface CodebuddySuiteAccountsSharedViewProps<
   page: UseProviderAccountsPageReturn;
   platformConfig: CodebuddySuiteAccountsPlatformConfig<TAccount>;
   onRefreshAccounts: () => void;
-  /** 勾选变化时上报（用于批量操作，如批量探测） */
   onSelectionChange?: (ids: string[]) => void;
   onLaunchAccount?: (account: TAccount) => void;
 }
@@ -351,14 +354,16 @@ export function CodebuddySuiteAccountsSharedView<
     normalizeTag,
   } = page;
 
-  // 向上汇报勾选（批量探测需要），用排序后的 key 避免 Set 引用抖动
-  const selectedIdsKey = useMemo(
-    () => Array.from(selected).sort().join(","),
-    [selected],
-  );
+  // Keep the submitted text in state for IPC and error recovery, but keep the
+  // native text area empty until the successful import closes the dialog.
+  const hideWorkbuddyImportText = platformConfig.quickSettingsType === "workbuddy"
+    && (importing || addStatus === "success");
+
+  const selectedIdsKey = useMemo(() => Array.from(selected).sort().join(","), [selected]);
   useEffect(() => {
     onSelectionChange?.(selectedIdsKey ? selectedIdsKey.split(",") : []);
   }, [selectedIdsKey, onSelectionChange]);
+
   const quotaNumberFormatter = useMemo(
     () =>
       new Intl.NumberFormat(locale || undefined, { maximumFractionDigits: 2 }),
@@ -577,6 +582,8 @@ export function CodebuddySuiteAccountsSharedView<
     [locale, maskAccountText, platformConfig, t],
   );
 
+  const getQuotaUpdatedAtMs = platformConfig.getQuotaUpdatedAtMs ?? getAccountQuotaUpdatedAtMs;
+
   const renderQuotaQuerySection = useCallback(
     (account: TAccount, variant: "card" | "table") => {
       if (platformConfig.renderQuotaSection) {
@@ -606,7 +613,7 @@ export function CodebuddySuiteAccountsSharedView<
         "common.shared.quota.cachedRefreshFailed",
         "刷新失败，以下为上次成功数据",
       );
-      const updatedAtMs = getAccountQuotaUpdatedAtMs(account);
+      const updatedAtMs = getQuotaUpdatedAtMs(account);
       const updatedAtText = updatedAtMs != null
         ? formatQuotaDateTime(updatedAtMs)
         : "";
@@ -635,7 +642,9 @@ export function CodebuddySuiteAccountsSharedView<
               <span className="quota-name">
                 {t(`${platformConfig.usagePrefix}.usage`, "用量状态")}
               </span>
-              {renderUsageInfo(account)}
+              {!hasQuotaData && !refreshFailed && platformConfig.usageUnavailableText
+                ? <span>{platformConfig.usageUnavailableText}</span>
+                : renderUsageInfo(account)}
             </div>
           </div>
           <div
@@ -690,7 +699,7 @@ export function CodebuddySuiteAccountsSharedView<
         </>
       );
     },
-    [platformConfig, renderResourceQuotaItems, renderUsageInfo, t],
+    [getQuotaUpdatedAtMs, platformConfig, renderResourceQuotaItems, renderUsageInfo, t, timeDisplayMode],
   );
 
   const renderGridCards = (items: typeof filteredAccounts, groupKey?: string) =>
@@ -762,8 +771,9 @@ export function CodebuddySuiteAccountsSharedView<
               lastSwitchedAt={account.last_switched_at}
               createdAt={account.created_at}
               formatDate={formatDate}
-              refreshAt={getAccountQuotaUpdatedAtMs(account)}
+              refreshAt={getQuotaUpdatedAtMs(account)}
             />
+            {platformConfig.renderCardFooterHint?.(account)}
             <div className="card-actions">
               <button
                 className="card-action-btn success"
@@ -904,7 +914,7 @@ export function CodebuddySuiteAccountsSharedView<
               lastSwitchedAt={account.last_switched_at}
               createdAt={account.created_at}
               formatDate={formatDate}
-              refreshAt={getAccountQuotaUpdatedAtMs(account)}
+              refreshAt={getQuotaUpdatedAtMs(account)}
             />
           </td>
           <td className="sticky-action-cell table-action-cell">
@@ -1121,14 +1131,6 @@ export function CodebuddySuiteAccountsSharedView<
                         />{" "}
                         {t("accounts.groupByTag", "按标签分组")}
                       </label>
-                      {tagFilter.length > 0 && (
-                        <button
-                          className="tag-filter-clear"
-                          onClick={clearTagFilter}
-                        >
-                          {t("common.shared.clear", "清除")}
-                        </button>
-                      )}
                     </div>
                     <div
                       className="tag-filter-list"
@@ -1145,6 +1147,29 @@ export function CodebuddySuiteAccountsSharedView<
                         </label>
                       ))}
                     </div>
+                    <div className="tag-filter-actions">
+                      <button
+                        type="button"
+                        className="tag-filter-action-btn"
+                        disabled={availableTags.every((tag) => tagFilter.includes(tag))}
+                        onClick={() =>
+                          availableTags.forEach((tag) => {
+                            if (!tagFilter.includes(tag)) toggleTagFilterValue(tag);
+                          })
+                        }
+                      >
+                        {t("common.selectAll", "全选")}
+                      </button>
+                      {tagFilter.length > 0 && (
+                        <button
+                          type="button"
+                          className="tag-filter-clear"
+                          onClick={clearTagFilter}
+                        >
+                          {t("common.shared.clear", "清除")}
+                        </button>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
@@ -1154,7 +1179,7 @@ export function CodebuddySuiteAccountsSharedView<
         <div className="toolbar-right">
           <button
             className="btn btn-primary icon-only"
-            onClick={() => openAddModal("oauth")}
+            onClick={() => openAddModal(platformConfig.hideOauthTab ? "json" : "oauth")}
             title={t("common.shared.addAccount", "添加账号")}
           >
             <Plus size={14} />
@@ -1282,7 +1307,7 @@ export function CodebuddySuiteAccountsSharedView<
           >
             <button
               className="btn btn-primary"
-              onClick={() => openAddModal("oauth")}
+              onClick={() => openAddModal(platformConfig.hideOauthTab ? "json" : "oauth")}
             >
               <Plus size={16} /> {t("common.shared.addAccount", "添加账号")}
             </button>
@@ -1454,15 +1479,17 @@ export function CodebuddySuiteAccountsSharedView<
                       : ""
                   }`}
                 >
-                  <button
-                    className={`modal-tab ${addTab === "oauth" ? "active" : ""}`}
-                    onClick={() => openAddModal("oauth")}
-                  >
-                    <Globe size={14} />
-                    <span className="modal-tab-label">
-                      {t("common.shared.addModal.oauth", "授权登录")}
-                    </span>
-                  </button>
+                  {!platformConfig.hideOauthTab && (
+                    <button
+                      className={`modal-tab ${addTab === "oauth" ? "active" : ""}`}
+                      onClick={() => openAddModal("oauth")}
+                    >
+                      <Globe size={14} />
+                      <span className="modal-tab-label">
+                        {t("common.shared.addModal.oauth", "授权登录")}
+                      </span>
+                    </button>
+                  )}
                   {/* 与 Codex 一致：OAuth | Token / JSON | API Key | 本地导入 */}
                   {platformConfig.showPasteJsonTab ? (
                     <>
@@ -1828,7 +1855,8 @@ export function CodebuddySuiteAccountsSharedView<
                     ) : (
                       <textarea
                         className="token-input"
-                        value={tokenInput}
+                        value={hideWorkbuddyImportText ? "" : tokenInput}
+                        readOnly={hideWorkbuddyImportText}
                         onChange={(e) => setTokenInput(e.target.value)}
                         placeholder={t(
                           platformConfig.tokenInputPlaceholderKey ||
@@ -1843,6 +1871,7 @@ export function CodebuddySuiteAccountsSharedView<
                       onClick={handleTokenImport}
                       disabled={
                         importing ||
+                        hideWorkbuddyImportText ||
                         !tokenInput.trim() ||
                         platformConfig.tokenSubmitDisabled
                       }
@@ -1872,7 +1901,8 @@ export function CodebuddySuiteAccountsSharedView<
                     </p>
                     <textarea
                       className="token-input"
-                      value={tokenInput}
+                      value={hideWorkbuddyImportText ? "" : tokenInput}
+                      readOnly={hideWorkbuddyImportText}
                       onChange={(e) => setTokenInput(e.target.value)}
                       placeholder={t(
                         platformConfig.pasteJsonPlaceholderKey ||
@@ -1884,7 +1914,7 @@ export function CodebuddySuiteAccountsSharedView<
                     <button
                       className="btn btn-primary btn-full"
                       onClick={handleTokenImport}
-                      disabled={importing || !tokenInput.trim()}
+                      disabled={importing || hideWorkbuddyImportText || !tokenInput.trim()}
                     >
                       {importing ? (
                         <RefreshCw size={16} className="loading-spinner" />

@@ -5,6 +5,7 @@ use crate::models::workbuddy::{WorkbuddyOAuthCompletePayload, WorkbuddyOAuthStar
 use crate::modules::logger;
 
 pub(super) const WORKBUDDY_API_ENDPOINT: &str = "https://copilot.tencent.com";
+const WORKBUDDY_LOGIN_HOST: &str = "www.workbuddy.cn";
 const WORKBUDDY_API_PREFIX: &str = "/v2/plugin";
 const WORKBUDDY_PLATFORM: &str = "workbuddy";
 // WorkBuddy 与 CodeBuddy 共用同一网关校验，缺少 User-Agent 会返回 403 / code=10085。
@@ -64,6 +65,14 @@ fn decorate_workbuddy_auth_url(
     let Ok(mut url) = url::Url::parse(raw_url) else {
         return raw_url.to_string();
     };
+    // The legacy browser entry redirects to CodeBuddy's login options.
+    if url.scheme() == "https"
+        && url.host_str() == Some("copilot.tencent.com")
+        && url.port().is_none()
+        && matches!(url.path(), "/login" | "/login/")
+    {
+        let _ = url.set_host(Some(WORKBUDDY_LOGIN_HOST));
+    }
     {
         let mut query = url.query_pairs_mut();
         if let Some(version) = version.map(str::trim).filter(|value| !value.is_empty()) {
@@ -219,7 +228,11 @@ async fn start_login_with_platform(platform: &str) -> Result<WorkbuddyOAuthStart
     .flatten();
 
     let base_verification_uri = if auth_url.is_empty() {
-        format!("{}/login?state={}", WORKBUDDY_API_ENDPOINT, state)
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("state", &state)
+            .append_pair("platform", platform)
+            .finish();
+        format!("https://{WORKBUDDY_LOGIN_HOST}/login?{query}")
     } else {
         auth_url.clone()
     };
@@ -508,32 +521,35 @@ async fn fetch_account_info(
     ))
 }
 
+fn token_refresh_request(
+    client: &reqwest::Client,
+    access_token: &str,
+    refresh_token: &str,
+    domain: Option<&str>,
+) -> Result<reqwest::Request, String> {
+    let url = url::Url::parse(&format!("{WORKBUDDY_API_ENDPOINT}{WORKBUDDY_API_PREFIX}/auth/token/refresh"))
+        .map_err(|error| error.to_string())?;
+    // The desktop client falls back to the authentication endpoint's authority.
+    let domain = domain.map(str::trim).filter(|value| !value.is_empty())
+        .unwrap_or(url.authority());
+    client.post(url.clone())
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("X-Refresh-Token", refresh_token)
+        .header("X-Auth-Refresh-Source", "plugin")
+        .header("X-Domain", domain)
+        .json(&json!({}))
+        .build()
+        .map_err(|error| format!("构造刷新请求失败: {error}"))
+}
+
 pub async fn refresh_token(
     access_token: &str,
     refresh_token: &str,
     domain: Option<&str>,
 ) -> Result<Value, String> {
     let client = build_client()?;
-    let url = format!(
-        "{}{}/auth/token/refresh",
-        WORKBUDDY_API_ENDPOINT, WORKBUDDY_API_PREFIX
-    );
-
-    let mut req = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .header("X-Refresh-Token", refresh_token)
-        .header("X-Auth-Refresh-Source", "plugin")
-        .json(&json!({}));
-
-    if let Some(d) = domain {
-        req = req.header("X-Domain", d);
-    }
-
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("刷新 token 失败:{}", e))?;
+    let request = token_refresh_request(&client, access_token, refresh_token, domain)?;
+    let resp = client.execute(request).await.map_err(|e| format!("刷新 token 失败:{}", e))?;
 
     let body: Value = resp
         .json()
@@ -1455,16 +1471,34 @@ mod tests {
     }
 
     #[test]
+    fn token_refresh_uses_account_domain_or_auth_endpoint_for_legacy_accounts() {
+        let client = reqwest::Client::new();
+        for (saved, expected) in [(None, "copilot.tencent.com"), (Some(" "), "copilot.tencent.com"),
+            (Some("tenant.example.invalid"), "tenant.example.invalid")] {
+            let request = token_refresh_request(&client, "fixture", "fixture-refresh", saved).unwrap();
+            assert_eq!(request.url().host_str(), Some("copilot.tencent.com"));
+            assert_eq!(request.headers()["x-domain"], expected);
+        }
+    }
+
+    #[test]
     fn auth_url_contains_detected_version_and_login_session() {
         let decorated = decorate_workbuddy_auth_url(
-            "https://copilot.tencent.com/login?state=test",
+            "https://copilot.tencent.com/login?state=test&platform=workbuddy",
             Some("5.4.5"),
             "00000000-0000-4000-8000-000000000000",
         );
         let parsed = url::Url::parse(&decorated).unwrap();
+        assert_eq!(parsed.host_str(), Some("www.workbuddy.cn"));
+        assert_eq!(parsed.path(), "/login");
         let params = parsed
             .query_pairs()
             .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(params.get("state").map(|value| value.as_ref()), Some("test"));
+        assert_eq!(
+            params.get("platform").map(|value| value.as_ref()),
+            Some("workbuddy")
+        );
         assert_eq!(
             params.get("version").map(|value| value.as_ref()),
             Some("5.4.5")
@@ -1473,6 +1507,17 @@ mod tests {
             params.get("loginSessionId").map(|value| value.as_ref()),
             Some("00000000-0000-4000-8000-000000000000")
         );
+    }
+
+    #[test]
+    fn auth_url_keeps_other_server_supplied_login_routes() {
+        for url in [
+            "https://www.workbuddy.cn/login/client-login",
+            "https://copilot.tencent.com/login/wecom-oauth-callback",
+        ] {
+            let decorated = decorate_workbuddy_auth_url(url, None, "test-session");
+            assert_eq!(decorated, format!("{url}?loginSessionId=test-session"));
+        }
     }
 
     #[test]

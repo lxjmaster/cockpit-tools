@@ -7,6 +7,7 @@ pub mod error;
 mod models;
 mod modules;
 mod utils;
+mod frontend_smoke;
 
 #[cfg(test)]
 mod dependency_tls_tests;
@@ -29,11 +30,34 @@ pub fn try_run_codebuddy_cli() -> Option<i32> {
     Some(result.unwrap_or_else(|error| modules::codebuddy_cli::report_terminal_error("en", &error)))
 }
 
+pub fn try_run_codex_cli_resume() -> Option<i32> {
+    use commands::codex_instance::cli_resume::{run_from_terminal, RUN_ARG};
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() != Some(std::ffi::OsStr::new(RUN_ARG)) {
+        return None;
+    }
+    let instance = args.next().and_then(|arg| arg.into_string().ok());
+    let data_dir = args.next();
+    let codex_home = args.next();
+    let result = match (instance, data_dir, codex_home, args.next()) {
+        (Some(instance), Some(data_dir), Some(codex_home), None) => {
+            // Login shells can have a different Cockpit profile or CODEX_HOME.
+            // This runs before Cockpit initializes any config or worker threads.
+            std::env::set_var("COCKPIT_TOOLS_DATA_DIR", data_dir);
+            std::env::set_var("CODEX_HOME", &codex_home);
+            run_from_terminal(&instance, std::path::Path::new(&codex_home))
+        }
+        _ => Err("缺少要续跑的 Codex 实例或目录".into()),
+    };
+    Some(result.unwrap_or_else(|error| {
+        eprintln!("Codex session resume: {error}");
+        1
+    }))
+}
+
 use modules::config::CloseWindowBehavior;
 use modules::logger;
 use std::sync::OnceLock;
-#[cfg(target_os = "macos")]
-use tauri::ActivationPolicy;
 use tauri::RunEvent;
 use tauri::WindowEvent;
 use tauri::{Emitter, Manager};
@@ -111,6 +135,16 @@ mod tests {
     }
 
     #[test]
+    fn startup_minimized_hides_even_without_tray_when_dock_icon_is_hidden() {
+        let mut config = UserConfig::default();
+        config.startup_minimized = true;
+        config.hide_dock_icon = true;
+        config.show_tray_icon = false;
+
+        assert!(should_hide_startup_minimized_window(&config, true));
+    }
+
+    #[test]
     fn startup_minimized_does_not_wait_before_hiding_window() {
         let source = include_str!("lib.rs");
         let delayed_startup_hide = concat!(
@@ -152,6 +186,7 @@ mod tests {
         config.minimax_code_auto_refresh_minutes = -1;
         config.qoder_auto_refresh_minutes = -1;
         config.zcode_auto_refresh_minutes = -1;
+        config.t3code_auto_refresh_minutes = -1;
         config.trae_auto_refresh_minutes = -1;
         config.trae_solo_auto_refresh_minutes = -1;
         config.trae_cn_auto_refresh_minutes = -1;
@@ -247,11 +282,7 @@ fn should_hide_startup_minimized_window(
     config: &modules::config::UserConfig,
     is_macos: bool,
 ) -> bool {
-    config.startup_minimized && is_macos && should_hide_dock_icon(config)
-}
-
-fn should_hide_dock_icon(config: &modules::config::UserConfig) -> bool {
-    config.show_tray_icon && config.hide_dock_icon
+    config.startup_minimized && is_macos && config.hide_dock_icon
 }
 
 fn should_preserve_main_window_for_menu_bar_refresh(
@@ -277,6 +308,7 @@ fn has_enabled_periodic_account_refresh(config: &modules::config::UserConfig) ->
         config.minimax_code_auto_refresh_minutes,
         config.qoder_auto_refresh_minutes,
         config.zcode_auto_refresh_minutes,
+        config.t3code_auto_refresh_minutes,
         config.trae_auto_refresh_minutes,
         config.trae_solo_auto_refresh_minutes,
         config.trae_cn_auto_refresh_minutes,
@@ -320,50 +352,8 @@ fn apply_startup_minimized(app: &tauri::AppHandle) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn apply_macos_activation_policy(app: &tauri::AppHandle) {
-    let config = modules::config::get_user_config();
-    if let Err(err) = set_macos_dock_policy(app, should_hide_dock_icon(&config)) {
-        logger::log_warn(&format!("[Window] 应用 macOS Dock 图标策略失败: {}", err));
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn set_macos_dock_policy(app: &tauri::AppHandle, hide_dock_icon: bool) -> tauri::Result<()> {
-    let (policy, dock_visible, policy_label) = if hide_dock_icon {
-        (ActivationPolicy::Accessory, false, "hidden")
-    } else {
-        (ActivationPolicy::Regular, true, "visible")
-    };
-
-    app.set_activation_policy(policy)?;
-    app.set_dock_visibility(dock_visible)?;
-
-    if dock_visible {
-        let _ = app.show();
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-        }
-    }
-
-    info!("[Window] 已应用 macOS Dock 图标策略: {}", policy_label);
-    Ok(())
-}
-
 fn apply_tray_visibility(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    if !visible {
-        set_macos_dock_policy(app, false).map_err(|err| err.to_string())?;
-    }
-    modules::tray::set_tray_visibility(app, visible)?;
-    #[cfg(target_os = "macos")]
-    if visible {
-        let config = modules::config::get_user_config();
-        if should_hide_dock_icon(&config) {
-            set_macos_dock_policy(app, true).map_err(|err| err.to_string())?;
-        }
-    }
-    Ok(())
+    modules::tray::set_tray_visibility(app, visible)
 }
 
 fn handle_zcode_oauth_deep_links(args: &[String]) -> bool {
@@ -403,8 +393,16 @@ fn configure_main_window_decorations(config: &mut tauri::Config, is_linux: bool)
     }
 }
 
+fn create_app_context() -> tauri::Context<tauri::Wry> {
+    // A single expansion embeds the macOS Info.plist symbol once.
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if frontend_smoke::try_run() {
+        return;
+    }
     if let Some(code) = modules::codex_continuity_worker::try_run() {
         std::process::exit(code);
     }
@@ -424,8 +422,15 @@ pub fn run() {
     }
 
     // Tauri and the tray's window recreation both read this configuration.
-    let mut context = tauri::generate_context!();
+    let mut context = create_app_context();
     configure_main_window_decorations(context.config_mut(), cfg!(target_os = "linux"));
+    let startup_main_window_state = context
+        .config_mut()
+        .app
+        .windows
+        .iter_mut()
+        .find(|window| window.label == "main")
+        .and_then(modules::main_window_state::apply_state_to_window_config);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
@@ -456,7 +461,7 @@ pub fn run() {
                 logger::log_warn(&format!("[Window] 单实例唤起恢复主窗口失败: {}", err));
             }
         }))
-        .setup(|app| {
+        .setup(move |app| {
             info!("Cockpit Tools 启动...");
             let current_exe = std::env::current_exe()
                 .map(|path| path.display().to_string())
@@ -526,6 +531,7 @@ pub fn run() {
 
             // 一次性迁移：历史版本可能被自动开启的「模型管理」统一关闭，之后由用户自己决定。
             std::thread::spawn(|| {
+                modules::config::persist_codex_native_predictions_default();
                 // Recover interrupted explicit imports before other model maintenance
                 // can touch the same profiles. None of this gates the main window.
                 modules::codex_account::recover_pending_model_config_imports_for_known_profiles();
@@ -584,9 +590,10 @@ pub fn run() {
 
             tauri::async_runtime::spawn(modules::codex_proxy_catalog::auto_refresh_loop());
             tauri::async_runtime::spawn(commands::account::auto_refresh::run(app.handle().clone()));
-            tauri::async_runtime::spawn(modules::codex_reset_automation::run(app.handle().clone()));
+            modules::codex_reset_automation::schedule_migration();
             tauri::async_runtime::spawn(modules::codex_subscription_refresh::run());
             tauri::async_runtime::spawn(modules::codex_proxy_desktop_router::restore_on_startup());
+            tauri::async_runtime::spawn(modules::ssh_server::run_api_service_sync());
 
             // 启动 WebSocket 服务（使用 Tauri 的 async runtime）
             tauri::async_runtime::spawn(async {
@@ -604,9 +611,6 @@ pub fn run() {
             tauri::async_runtime::spawn(async {
                 modules::codex_local_access::restore_local_access_gateway().await;
             });
-
-            // 实例级网关（provider gateway / 绑定 OAuth 本地网关）启动自愈：宿主重启后按已持久化的
-            // profile 绑定与 sidecar 目录重建，避免 Codex 实例指向一个已经不存在的本地端口。
             tauri::async_runtime::spawn(async {
                 modules::codex_local_access::restore_instance_gateways_on_startup().await;
             });
@@ -692,7 +696,7 @@ pub fn run() {
             }
 
             #[cfg(target_os = "macos")]
-            apply_macos_activation_policy(&app.handle());
+            modules::app_presence::apply_configured_policy(&app.handle());
 
             #[cfg(any(windows, target_os = "linux"))]
             {
@@ -801,9 +805,11 @@ pub fn run() {
                 startup_external_import_handled
             ));
 
-            // Restore last main-window size/position before optional startup minimize (#948 / #1132).
-            if let Some(main) = app.get_webview_window("main") {
-                modules::main_window_state::restore_to_window(&main);
+            // The initial size is already in the config. Restore placement before startup minimize.
+            if let (Some(main), Some(state)) =
+                (app.get_webview_window("main"), startup_main_window_state)
+            {
+                modules::main_window_state::restore_saved_placement(&main, state);
             }
 
             apply_startup_minimized(&app.handle());
@@ -936,7 +942,6 @@ pub fn run() {
             commands::account::refresh_current_quota,
             commands::account::switch_account,
             commands::account::antigravity_launch_current,
-            commands::account::cli_launch::get_antigravity_client_launch_path,
             commands::account::cli_launch::switch_antigravity_cli,
             commands::account::cli_launch::launch_antigravity_cli,
             commands::account::cli_launch::antigravity_cli_launch_command,
@@ -1019,6 +1024,8 @@ pub fn run() {
             commands::claude_instance::claude_execute_instance_launch_command,
             // System Commands
             commands::system::open_data_folder,
+            commands::system::get_data_directory_settings,
+            commands::system::set_data_directory,
             commands::system::open_local_path,
             commands::system::windows_elevated_close_processes,
             commands::system::save_text_file,
@@ -1043,6 +1050,7 @@ pub fn run() {
             commands::system::schedule_apikey_fun_recovery_checkpoint,
             commands::system::restore_apikey_fun_vault,
             commands::system::export_legacy_apikey_fun_vault,
+            commands::system::apply_apikey_fun_gemini_cli_env,
             commands::system::delete_auto_backup_file,
             commands::system::cleanup_auto_backup_files,
             commands::system::open_auto_backup_dir,
@@ -1080,6 +1088,8 @@ pub fn run() {
             commands::system::save_tray_platform_layout,
             commands::system::set_app_path,
             commands::cli_launch_path::inspect_cli_launch_path,
+            commands::cli_launch_path::get_platform_launch_path,
+            commands::cli_launch_path::scan_platform_launch_paths,
             commands::cli_launch_path::save_cli_launch_path,
             commands::system::launch_opencode_current,
             commands::system::validate_codex_app_path,
@@ -1122,6 +1132,7 @@ pub fn run() {
             commands::logs::logs_get_snapshot,
             commands::logs::logs_open_log_directory,
             // Wakeup Commands
+            commands::wakeup::wakeup_get_default_transport_mode,
             commands::wakeup::wakeup_ensure_runtime_ready,
             commands::wakeup::trigger_wakeup,
             commands::wakeup::fetch_available_models,
@@ -1153,6 +1164,7 @@ pub fn run() {
             commands::update::update_log,
             commands::update::get_update_runtime_info,
             commands::update::install_linux_update,
+            commands::update::relaunch_after_update,
             // Announcement Commands
             commands::announcement::announcement_get_state,
             commands::announcement::announcement_mark_as_read,
@@ -1177,10 +1189,15 @@ pub fn run() {
             // Codex Commands
             commands::codex::list_codex_accounts,
             commands::codex::get_current_codex_account,
+            commands::codex::get_codex_profile_lifetime_tokens,
             commands::codex::get_codex_config_toml_path,
             commands::codex::get_codex_storage_paths,
             commands::codex::open_codex_config_toml,
             commands::codex::get_codex_quick_config,
+            commands::codex::get_codex_model_instructions,
+            commands::codex::set_codex_model_instructions,
+            commands::codex::get_codex_subagent_defaults,
+            commands::codex::set_codex_subagent_defaults,
             commands::codex::save_codex_context_management,
             commands::codex::save_codex_quick_config,
             commands::codex::save_codex_model_catalog,
@@ -1224,6 +1241,7 @@ pub fn run() {
             commands::codex::refresh_codex_quota,
             modules::codex_quota_sync::set_codex_quota_sync_disabled_emails,
             modules::codex_quota_history::get_codex_quota_history,
+            modules::platform_quota_history::get_platform_quota_history,
             modules::codex_quota_history::management::codex_quota_history_settings,
             modules::codex_quota_history::management::set_codex_quota_history_settings,
             modules::codex_quota_history::management::codex_quota_history_stats,
@@ -1238,9 +1256,6 @@ pub fn run() {
             commands::codex::get_codex_reset_credit_history,
             commands::codex::get_codex_reset_usage_history,
             commands::codex::consume_codex_reset_credit,
-            commands::codex::get_codex_reset_automation,
-            commands::codex::save_codex_reset_public_rule,
-            commands::codex::save_codex_reset_account_rule,
             commands::codex::refresh_codex_subscription_info,
             commands::codex::refresh_all_codex_quotas,
             commands::codex::refresh_current_codex_quota,
@@ -1269,8 +1284,17 @@ pub fn run() {
             commands::codex::add_codex_account_with_token,
             commands::codex::add_codex_account_with_api_key,
             commands::codex::add_codex_account_from_grok,
+            commands::codex::add_codex_account_from_workbuddy,
+            commands::codex::add_codex_account_from_zcode,
             commands::codex::update_codex_account_name,
             commands::codex::update_codex_account_egress_proxy,
+            commands::codex::use_codex_client_proxy_defaults,
+            commands::codex_proxy_country::get_codex_proxy_country_policy,
+            commands::codex_proxy_country::set_codex_proxy_country_policy,
+            commands::codex_proxy_country::get_codex_proxy_env,
+            commands::codex_proxy_country::set_codex_proxy_env,
+            commands::codex_proxy_country::get_codex_proxy_country_checks,
+            commands::codex_proxy_country::check_codex_proxy_country,
             commands::codex::test_codex_account_egress_proxy,
             commands::codex::cancel_codex_account_egress_proxy,
             commands::codex::get_codex_account_proxy_status,
@@ -1349,6 +1373,7 @@ pub fn run() {
             commands::codex::codex_cancel_model_provider_chat_test,
             commands::codex::codex_list_model_provider_models,
             commands::codex::get_codex_model_reasoning_efforts,
+            commands::codex::get_codex_base_catalog_source,
             commands::codex::preview_codex_model_config_import,
             commands::codex::import_codex_model_config,
             commands::codex::export_codex_model_config,
@@ -1356,6 +1381,7 @@ pub fn run() {
             commands::codex::codex_discover_remote_service,
             commands::codex::codex_query_remote_key_data,
             commands::codex::codex_local_access_get_state,
+            commands::codex::codex_local_access_refresh_model_data,
             commands::codex::codex_local_access_preview_claude_code_settings,
             commands::codex::codex_local_access_apply_claude_code_settings,
             commands::codex::codex_local_access_restore_claude_code_settings,
@@ -1380,10 +1406,12 @@ pub fn run() {
             commands::codex::codex_local_access_update_bound_oauth_account,
             commands::codex::codex_local_access_clear_stats,
             commands::codex::codex_local_access_query_stats,
+            commands::codex::codex_local_access_monthly_token_alert,
             commands::codex::codex_local_access_query_account_window_stats,
             commands::codex::codex_local_access_query_request_logs,
             commands::codex::codex_account_proxy_recent_requests,
             commands::codex::codex_local_access_prepare_restart,
+            commands::codex::codex_local_access_resume_after_failed_update,
             commands::codex::codex_local_access_restart_sidecar,
             commands::codex::codex_local_access_kill_port,
             commands::codex::codex_local_access_change_random_port,
@@ -1391,6 +1419,7 @@ pub fn run() {
             commands::codex::codex_local_access_update_routing_strategy,
             commands::codex::codex_local_access_update_custom_routing,
             commands::codex::codex_local_access_update_account_model_rules,
+            commands::codex::codex_local_access_update_account_quota_floor,
             commands::codex::codex_local_access_update_model_rules,
             commands::codex::codex_local_access_update_model_pricings,
             commands::codex::codex_local_access_reprice_request_logs,
@@ -1406,6 +1435,9 @@ pub fn run() {
             commands::codex::codex_local_access_update_access_scope,
             commands::codex::codex_local_access_update_client_base_url_host,
             commands::codex::codex_local_access_create_api_key,
+            commands::codex::codex_local_access_save_account_pool,
+            commands::codex::codex_local_access_delete_account_pool,
+            commands::codex::codex_local_access_detach_api_key_from_pool,
             commands::codex::codex_local_access_update_api_key,
             commands::codex::codex_local_access_set_api_key_account_priority,
             commands::codex::codex_local_access_rotate_named_api_key,
@@ -1501,6 +1533,8 @@ pub fn run() {
             commands::codebuddy_cli::codebuddy_cli_launch,
             commands::codebuddy_cli::codebuddy_cli_launch_command,
             commands::codebuddy_session::codebuddy_list_sessions,
+            commands::codebuddy_session::codebuddy_list_session_overview,
+            commands::codebuddy_session::workbuddy_rebind_workspace,
             commands::ssh_server::list_ssh_servers,
             commands::ssh_server::upsert_ssh_server,
             commands::ssh_server::delete_ssh_server,
@@ -1686,6 +1720,7 @@ pub fn run() {
             commands::zcode::delete_zcode_account,
             commands::zcode::delete_zcode_accounts,
             commands::zcode::import_zcode_from_json,
+            commands::zcode::import_zcode_from_file,
             commands::zcode::import_zcode_from_local,
             commands::zcode::import_zcode_api_key,
             commands::zcode::export_zcode_accounts,
@@ -1711,6 +1746,45 @@ pub fn run() {
             commands::zcode_instance::zcode_stop_instance,
             commands::zcode_instance::zcode_open_instance_window,
             commands::zcode_instance::zcode_close_all_instances,
+            // T3 Code Commands
+            commands::t3code::list_t3code_accounts,
+            commands::t3code::delete_t3code_account,
+            commands::t3code::delete_t3code_accounts,
+            commands::t3code::import_t3code_from_json,
+            commands::t3code::import_t3code_from_file,
+            commands::t3code::import_t3code_from_local,
+            commands::t3code::import_t3code_token,
+            commands::t3code::export_t3code_accounts,
+            commands::t3code::refresh_t3code_account,
+            commands::t3code::refresh_all_t3code_accounts,
+            commands::t3code::inject_t3code_account,
+            commands::t3code::t3code_launch_current,
+            commands::t3code::update_t3code_account_tags,
+            commands::t3code::get_t3code_current_account_id,
+            commands::t3code::get_t3code_accounts_index_path,
+            commands::t3code::get_t3code_native_settings,
+            commands::t3code::update_t3code_native_settings,
+            commands::t3code::get_t3code_provider_workspace,
+            commands::t3code::get_t3code_api_service_quota,
+            commands::t3code::t3code_sync_provider_launch_paths,
+            commands::t3code::t3code_install_antigravity_runtime,
+            commands::t3code::get_t3code_provider_runtime_status,
+            commands::t3code::bind_t3code_provider_instance_account,
+            commands::t3code::switch_t3code_provider_instance_account,
+            commands::t3code::promote_t3code_provider_account,
+            commands::t3code::upsert_t3code_provider_instance,
+            commands::t3code::remove_t3code_provider_instance,
+            commands::t3code::refresh_t3code_provider_account_quota,
+            // T3 Code Instance Commands
+            commands::t3code_instance::t3code_get_instance_defaults,
+            commands::t3code_instance::t3code_list_instances,
+            commands::t3code_instance::t3code_create_instance,
+            commands::t3code_instance::t3code_update_instance,
+            commands::t3code_instance::t3code_delete_instance,
+            commands::t3code_instance::t3code_start_instance,
+            commands::t3code_instance::t3code_stop_instance,
+            commands::t3code_instance::t3code_open_instance_window,
+            commands::t3code_instance::t3code_close_all_instances,
             // Qoder Instance Commands
             commands::qoder_instance::qoder_get_instance_defaults,
             commands::qoder_instance::qoder_list_instances,
@@ -1857,6 +1931,7 @@ pub fn run() {
             commands::codex_instance::codex_list_sessions_across_instances,
             commands::codex_instance::codex_get_session_token_stats_across_instances,
             commands::codex_instance::codex_query_session_usage,
+            commands::codex_session_usage::codex_query_session_usage_requests,
             commands::codex_instance::codex_sync_session_usage,
             commands::codex_instance::codex_move_sessions_to_trash_across_instances,
             commands::codex_instance::codex_list_trashed_sessions_across_instances,
@@ -1870,6 +1945,8 @@ pub fn run() {
             commands::codex_instance::codex_import_sessions,
             commands::codex_instance::codex_open_session_location,
             commands::codex_instance::codex_open_session_rollout,
+            commands::codex_instance::codex_get_session_resume_settings,
+            commands::codex_instance::codex_save_session_resume_settings,
             commands::codex_instance::codex_create_instance,
             commands::codex_instance::codex_update_instance,
             commands::codex_instance::profile_switch::codex_switch_instance_account,
@@ -1906,6 +1983,11 @@ pub fn run() {
             commands::antigravity_legacy_instance::antigravity_legacy_stop_instance,
             commands::antigravity_legacy_instance::antigravity_legacy_open_instance_window,
             commands::antigravity_legacy_instance::antigravity_legacy_close_all_instances,
+            commands::antigravity_token_usage::antigravity_query_token_usage,
+            commands::antigravity_token_usage::antigravity_sync_token_usage,
+            commands::antigravity_token_usage::antigravity_get_conversation_token_detail,
+            commands::antigravity_token_usage::antigravity_get_token_usage_settings,
+            commands::antigravity_token_usage::antigravity_set_token_usage_data_dir,
         ])
         .build(context)
         .expect("error while building tauri application");
@@ -1953,6 +2035,7 @@ pub fn run() {
                         commands::codex_instance::restore_mixed_model_profiles_for_app_exit();
                     }
                     modules::codex_app_injection::stop_all();
+                    modules::t3code_app_injection::stop_all();
                     modules::codex_proxy_engine::shutdown_all();
                     let app_to_exit = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
@@ -1980,6 +2063,7 @@ pub fn run() {
                     commands::codex_instance::restore_mixed_model_profiles_for_app_exit();
                 }
                 modules::codex_app_injection::stop_all();
+                modules::t3code_app_injection::stop_all();
                 modules::codex_proxy_engine::shutdown_all();
                 tauri::async_runtime::spawn(async {
                     modules::codex_local_access::shutdown_local_access_gateway_for_app_exit().await;

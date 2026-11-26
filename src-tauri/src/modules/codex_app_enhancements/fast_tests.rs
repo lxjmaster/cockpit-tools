@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 struct Options {
     api_service: bool,
     native_fast: bool,
+    native_predictions: bool,
     api_key_auth_verified: bool,
     fast_only: bool,
     full_quota_only: bool,
@@ -16,6 +17,7 @@ struct Options {
     live_quota: bool,
     live_plan_invalid: bool,
     live_rspack: bool,
+    live_speed_contract: Option<bool>,
     preload_first: bool,
     profile_dir: PathBuf,
     draft_snapshot: Option<Value>,
@@ -44,6 +46,7 @@ impl Default for Options {
         Self {
             api_service: false,
             native_fast: true,
+            native_predictions: false,
             api_key_auth_verified: true,
             fast_only: false,
             full_quota_only: false,
@@ -54,6 +57,7 @@ impl Default for Options {
             live_quota: false,
             live_plan_invalid: false,
             live_rspack: false,
+            live_speed_contract: None,
             preload_first: false,
             profile_dir: PathBuf::new(),
             draft_snapshot: None,
@@ -115,6 +119,7 @@ async fn start(options: Options) -> Running {
     let profile_dir = options.profile_dir.clone();
     let api_service = options.api_service;
     let native_fast = options.native_fast;
+    let native_predictions = options.native_predictions;
     let api_key_auth_verified = options.api_key_auth_verified;
     let quota_compat = options.quota_compat;
     let public_entry = options.public_entry;
@@ -164,12 +169,34 @@ async fn start(options: Options) -> Running {
                     }
                     json!({})
                 }
+                "Runtime.addBinding" | "Runtime.removeBinding" | "Runtime.releaseObjectGroup"
+                | "Debugger.enable" | "Debugger.disable" | "Debugger.setBreakpointOnFunctionCall"
+                    if options.live_speed_contract == Some(true) => json!({}),
                 "Runtime.evaluate" => {
                     let expression = message["params"]["expression"].as_str().unwrap();
+                    if expression.starts_with("window.__cockpitServiceTierLive.target(") {
+                        let reply = json!({"id":message["id"],"result":{"result":{"type":"function","objectId":"native-speed-target"}}});
+                        socket.send(Message::Text(reply.to_string().into())).await.unwrap();
+                        continue;
+                    }
                     let value = if expression == "location.href" {
                         json!("app://-/index.html")
+                    } else if expression.ends_with("window.__cockpitServiceTierLive.prepare()") {
+                        if options.live_speed_contract == Some(true) {
+                            json!({"state":"ready","bindings":["w","X"]})
+                        } else {
+                            json!({"state":"unsupported"})
+                        }
+                    } else if expression == "window.__cockpitServiceTierLive.arm()" {
+                        let event = json!({"method":"Runtime.bindingCalled","params":{
+                            "name":service_tier_live::NOTICE,"payload":"active","executionContextId":1,
+                        }});
+                        socket.send(Message::Text(event.to_string().into())).await.unwrap();
+                        json!(true)
                     } else if expression == "window.__cockpitQuotaState.install()" {
                         json!({"ok":!options.live_plan_invalid,"reason":"quota-http-boundary-unavailable"})
+                    } else if expression == "window.__cockpitServiceRspack.verifyRequestedDocument()" {
+                        json!({"ok":true,"predictions":{"ok":true}})
                     } else if let Some(nonce) = argument(expression, "prepareHandoff") {
                         prepared_nonce = Some(nonce);
                         preparations += 1;
@@ -195,8 +222,12 @@ async fn start(options: Options) -> Running {
                         } else {
                             json!({"ok":true,"reason":"saved-home-draft"})
                         }
-                    } else if let Some(nonce) = argument(expression, "reloadPreparedDocument") {
-                        assert_eq!(Some(&nonce), prepared_nonce.as_ref());
+                    } else if expression == "window.__cockpitStartupGuard.reload()"
+                        || argument(expression, "reloadPreparedDocument").is_some()
+                    {
+                        if let Some(nonce) = argument(expression, "reloadPreparedDocument") {
+                            assert_eq!(Some(&nonce), prepared_nonce.as_ref());
+                        }
                         reload_attempts += 1;
                         if options.disconnect_on_reload {
                             let _ = notices_tx.send(json!({"phase":"reload-disconnected"}));
@@ -271,8 +302,7 @@ async fn start(options: Options) -> Running {
                     }
                 }
                 _ => {
-                    // This simulated modern client deliberately has no
-                    // Debugger or live-edit protocol implementation.
+                    // Only the supported fixture can attach to native speed.
                     error = Some(json!({"code":-32601,"message":"Method not found"}));
                     json!({})
                 }
@@ -328,13 +358,14 @@ async fn start(options: Options) -> Running {
                 url,
                 profile_dir,
                 native_fast,
-                false,
+                native_predictions,
                 quota_compat,
                 api_key_auth_verified,
                 api_service,
                 preload_first,
                 startup,
                 stop_rx,
+                None,
             )
             .await
         } else {
@@ -342,7 +373,7 @@ async fn start(options: Options) -> Running {
                 url,
                 profile_dir,
                 native_fast,
-                false,
+                native_predictions,
                 quota_compat,
                 api_key_auth_verified,
                 api_service,
@@ -350,6 +381,7 @@ async fn start(options: Options) -> Running {
                 startup,
                 stop_rx,
                 live_quota,
+                None,
             )
             .await
         }
@@ -518,6 +550,66 @@ async fn quota_data_failure_is_reported_without_reload_or_false_activation() {
     let calls = runtime.finish(false).await;
     assert_safe_protocol(&calls);
     assert_eq!(expressions(&calls, "window.__cockpitNativeFast.reloadPreparedDocument()"), 0);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn fresh_bound_oauth_predictions_preflight_without_fast_and_respect_the_draft_guard() {
+    let mut runtime = start(Options {
+        api_service: true,
+        api_key_auth_verified: false,
+        native_fast: false,
+        native_predictions: true,
+        quota_compat: false,
+        public_entry: true,
+        live_rspack: true,
+        reload_rejections: vec!["draft-present"],
+        ..Options::default()
+    })
+    .await;
+    runtime.notice("document", Some("draft-present")).await;
+    assert_eq!(runtime.navigations.load(Ordering::Acquire), 0);
+    assert_eq!(
+        runtime.notice("activation", Some("module-evaluated")).await["state"],
+        "active"
+    );
+    assert_eq!(runtime.navigations.load(Ordering::Acquire), 1);
+    let calls = runtime.finish(false).await;
+    assert_eq!(expressions(&calls, "window.__cockpitServiceRspack.verifyRequestedDocument()"), 1);
+    assert_eq!(methods(&calls, "Page.addScriptToEvaluateOnNewDocument"), 1);
+    assert_eq!(expressions(&calls, "window.__cockpitStartupGuard.reload()"), 2);
+    assert_safe_protocol(&calls);
+}
+
+#[tokio::test]
+async fn rspack_native_speed_activates_and_detaches_without_reloading() {
+    let mut runtime = start(Options {
+        live_rspack: true,
+        live_speed_contract: Some(true),
+        ..Options::default()
+    }).await;
+    assert_eq!(
+        runtime.notice("speed", Some("native-speed-menu-live")).await["state"],
+        "active"
+    );
+    assert_eq!(runtime.navigations.load(Ordering::Acquire), 0);
+    let calls = runtime.finish(false).await;
+    assert_eq!(methods(&calls, "Debugger.setBreakpointOnFunctionCall"), 2);
+    assert_eq!(methods(&calls, "Debugger.disable"), 1);
+    assert_eq!(methods(&calls, "Page.reload"), 0);
+    assert_eq!(methods(&calls, "Debugger.pause"), 0);
+}
+
+#[tokio::test]
+async fn rspack_native_speed_leaves_the_page_open_when_the_contract_changes() {
+    let mut runtime = start(Options {
+        live_rspack: true,
+        live_speed_contract: Some(false),
+        ..Options::default()
+    }).await;
+    runtime.notice("speed", Some("speed-contract-unsupported")).await;
+    assert_eq!(runtime.navigations.load(Ordering::Acquire), 0);
+    assert_safe_protocol(&runtime.finish(false).await);
 }
 
 #[tokio::test]
@@ -1494,7 +1586,8 @@ async fn disabled_and_stopped_sessions_do_not_connect() {
         false,
         false,
         None,
-        receiver
+        receiver,
+        None,
     )
     .await
     .is_ok());
@@ -1509,7 +1602,8 @@ async fn disabled_and_stopped_sessions_do_not_connect() {
         false,
         false,
         None,
-        receiver
+        receiver,
+        None,
     )
     .await
     .is_ok());
@@ -1705,6 +1799,6 @@ async fn page_worker_waits_for_browser_completion_before_replacing_its_owner() {
 
 #[test]
 fn automatic_fast_does_not_supply_catalog_fallbacks() {
-    let runtime = bootstrap(true, false, false, true, false, "catalog-test");
+    let runtime = bootstrap(true, false, false, true, false, "catalog-test", None);
     assert!(!runtime.contains("serviceTierFallbacks"));
 }

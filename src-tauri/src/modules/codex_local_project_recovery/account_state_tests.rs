@@ -400,6 +400,48 @@ fn scoped_ssh_preferences_follow_the_outgoing_account_to_the_next_launch() {
 }
 
 #[test]
+fn sqlite_ssh_preferences_drive_startup_and_follow_the_next_account() {
+    let f = Fixture::new();
+    let legacy = json!({
+        "codex-managed-remote-connections": [{"hostId":"stale","alias":"stale"}],
+        "remote-connection-auto-connect-by-host-id": {"stale":true}
+    });
+    f.write(&legacy);
+    let outgoing = "electron-account-remote-preference:remote-connection-auto-connect-by-host-id:old";
+    let incoming = "electron-account-remote-preference:remote-connection-auto-connect-by-host-id:new";
+    let db = desktop_state::desktop_settings_fixture(
+        f.home(),
+        &[
+            ("electron-renderer-content-owner", json!("old")),
+            ("codex-managed-remote-connections", json!([
+                {"hostId":"ssh-on","alias":"enabled"}, {"hostId":"ssh-off","alias":"disabled"}
+            ])),
+            (outgoing, json!({"ssh-on":true,"ssh-off":false,"cloud-old":true})),
+            (incoming, json!({"ssh-on":false,"ssh-off":true,"cloud-new":true})),
+        ],
+    );
+    prepare(f.home(), Some("new")).unwrap();
+    let read = |key: &str| -> Value {
+        let stored: String = db
+            .query_row(
+                "SELECT value FROM settings WHERE scope = 'global' AND key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&stored).unwrap()
+    };
+    assert_eq!(read(incoming), json!({"ssh-on":true,"ssh-off":false,"cloud-new":true}));
+    assert_eq!(read(outgoing), json!({"ssh-on":true,"ssh-off":false,"cloud-old":true}));
+    assert_eq!(read("electron-renderer-content-owner"), "old");
+    assert_eq!(f.state(), legacy);
+    let startup: Value =
+        serde_json::from_slice(&fs::read(f.home().join("codex-app/config.json")).unwrap()).unwrap();
+    assert_eq!(startup["remoteConnections"], json!([{"sshAlias":"enabled","projects":[]}]));
+    assert!(!prepare(f.home(), Some("new")).unwrap());
+}
+
+#[test]
 fn ssh_startup_removes_disabled_owned_aliases_and_preserves_user_configuration() {
     let f = Fixture::new();
     let config_path = f.home().join("codex-app/config.json");
@@ -652,6 +694,57 @@ fn account_project_switch_api_key_roundtrip_preserves_oauth_archive_without_leak
         3,
         "only workspace, database and original global state"
     );
+}
+
+#[test]
+fn account_switch_keeps_verified_projectless_threads_in_the_api_key_sidebar() {
+    let f = Fixture::new();
+    let db = Connection::open(f.home().join("state_5.sqlite")).unwrap();
+    db.execute_batch("ALTER TABLE threads ADD COLUMN first_user_message TEXT;")
+        .unwrap();
+    for id in ["unassigned", "remote", "cloud", "hidden-child"] {
+        let source = if id == "hidden-child" {
+            "subagent"
+        } else {
+            "vscode"
+        };
+        let cwd = if id == "cloud" {
+            "/tmp/.chatgpt-projects/private"
+        } else {
+            &f.root
+        };
+        db.execute(
+            "INSERT INTO threads VALUES(?1,?2,?3,NULL,0,'fixture user message')",
+            (id, cwd, source),
+        )
+        .unwrap();
+    }
+    drop(db);
+    let mut state = f.local("legacy");
+    state[SCOPES] = json!({"owner":"a","inactive":{}});
+    state["projectless-thread-ids"] = json!([
+        "unassigned",
+        "remote",
+        "cloud",
+        "hidden-child",
+        "chat",
+        "unknown"
+    ]);
+    state[HOSTS]["remote"] = json!("ssh-host");
+    state["thread-projectless-output-directories"] = json!({"unassigned":"/private/source-only"});
+    f.write(&state);
+
+    prepare(f.home(), None).unwrap();
+    let key = native_start(f.state(), None);
+    assert_eq!(key["projectless-thread-ids"], json!(["unassigned"]));
+    assert!(key.get("thread-projectless-output-directories").is_none());
+    assert_eq!(key[ASSIGN]["chat"]["projectId"], "legacy");
+    assert_eq!(
+        key[PARKED]["inactive"]["a"]["globals"]["projectless-thread-ids"],
+        state["projectless-thread-ids"]
+    );
+    f.write(&key);
+    assert!(!prepare(f.home(), None).unwrap());
 }
 
 #[test]

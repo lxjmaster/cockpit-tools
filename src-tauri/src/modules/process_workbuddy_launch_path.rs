@@ -66,11 +66,40 @@ fn workbuddy_install_is_international(executable: &Path) -> bool {
     }
 }
 
+pub(crate) const WORKBUDDY_NODE_PATH_PREFIX: &str = "WORKBUDDY_NODE_APP_PATH:";
+
+#[cfg(any(target_os = "windows", test))]
+fn is_workbuddy_node_runtime(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("node.exe"))
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn validate_workbuddy_app_path(path: &Path) -> Result<(), String> {
+    if is_workbuddy_node_runtime(path) {
+        return Err(format!("{WORKBUDDY_NODE_PATH_PREFIX}{}", path.display()));
+    }
+    Ok(())
+}
+
+pub(crate) fn format_workbuddy_app_path_error(error: String, locale: &str) -> String {
+    match error.strip_prefix(WORKBUDDY_NODE_PATH_PREFIX) {
+        Some(path) => crate::modules::i18n::translate(
+            locale,
+            "workbuddy.errors.nodeAppPath",
+            &[("path", path)],
+        ),
+        None => error,
+    }
+}
+
 fn select_workbuddy_launch_path(
     custom: Option<&str>,
     detect: impl FnOnce() -> Option<std::path::PathBuf>,
 ) -> Result<std::path::PathBuf, String> {
     if let Some(custom) = custom {
+        #[cfg(target_os = "windows")]
+        validate_workbuddy_app_path(Path::new(custom))?;
         let executable = resolve_workbuddy_macos_exec_path(custom)
             .ok_or_else(|| app_path_missing_error("workbuddy"))?;
         if !workbuddy_install_is_international(&executable) {
@@ -102,6 +131,17 @@ fn workbuddy_macos_main_command_matches(cmdline: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod workbuddy_launch_path_tests {
     use super::*;
+
+    #[test]
+    fn workbuddy_path_validation_rejects_node_and_accepts_the_desktop_executable() {
+        let node = "C:/WorkBuddy/resources/Node.EXE";
+        assert_eq!(
+            validate_workbuddy_app_path(Path::new(node)).unwrap_err(),
+            format!("{WORKBUDDY_NODE_PATH_PREFIX}{node}")
+        );
+        assert!(validate_workbuddy_app_path(Path::new("C:/WorkBuddy/WorkBuddy.exe")).is_ok());
+        assert!(validate_workbuddy_app_path(Path::new("")).is_ok());
+    }
 
     #[test]
     fn same_windows_executable_name_is_distinguished_by_installed_product_metadata() {
@@ -192,5 +232,53 @@ mod workbuddy_launch_path_tests {
             "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron --new-window",
             expected,
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn live_workbuddy_probe_keeps_two_profiles_separate_when_the_second_has_spaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = "/bin/bash";
+        let expected = normalize_path_for_compare(executable);
+        let dirs = [
+            temp.path().join("first/app"),
+            temp.path().join("second instance/app"),
+        ];
+        let children: Vec<_> = dirs
+            .iter()
+            .map(|profile| {
+                std::fs::create_dir_all(profile).unwrap();
+                Command::new(executable)
+                    .args(["-c", "read ready", "workbuddy-fixture"])
+                    .arg(format!("--user-data-dir={}", profile.display()))
+                    .arg("--new-window")
+                    .arg("--user-data-dir=/unused-extra-argument")
+                    .stdin(Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let entries = collect_workbuddy_macos_process_entries(&expected);
+        let pids: Vec<_> = children
+            .into_iter()
+            .map(|mut child| {
+                drop(child.stdin.take());
+                child.wait().unwrap();
+                child.id()
+            })
+            .collect();
+        for (pid, directory) in pids.into_iter().zip(dirs) {
+            assert_eq!(
+                entries
+                    .iter()
+                    .find(|(candidate, _)| *candidate == pid)
+                    .and_then(|(_, path)| path.as_deref()),
+                directory.to_str(),
+            );
+            assert_eq!(
+                resolve_workbuddy_pid_from_entries(None, directory.to_str(), &entries),
+                Some(pid)
+            );
+        }
     }
 }

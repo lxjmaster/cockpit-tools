@@ -1,6 +1,36 @@
 // Codex 账号模块：Account metadata mutations, OAuth binding and quota auto-switch alerts。
 // 通过 include! 保持原 modules::codex_account 作用域，完整保留私有调用关系。
 include!("codex_account_api_key_edit.rs");
+
+/// WorkBuddy credits are not Codex quota windows. Merge only the stale quota
+/// fields against the latest durable account, never a caller's older metadata.
+pub(crate) fn clear_workbuddy_codex_quota(original: &CodexAccount) -> Result<(), String> {
+    let _guard = CODEX_ACCOUNT_MUTATION_LOCK
+        .lock()
+        .map_err(|_| "CODEX_QUOTA_WRITE_LOCK_POISONED".to_string())?;
+    let mut current = load_account_checked(&original.id)?
+        .ok_or_else(|| "CODEX_STALE_ACCOUNT".to_string())?;
+    if !is_workbuddy_upstream_provider(&current)
+        || current.token_generation != original.token_generation
+        || current.api_credential_ref != original.api_credential_ref
+    {
+        return Err("CODEX_STALE_QUOTA_REQUEST".to_string());
+    }
+    let changed = current.quota.is_some()
+        || current.quota_error.is_some()
+        || current.team_quota_history.is_some()
+        || current.usage_updated_at.is_some();
+    if changed {
+        current.quota = None;
+        current.quota_error = None;
+        current.team_quota_history = None;
+        current.usage_updated_at = None;
+        save_account_with_tombstone_guard(&current)?;
+        crate::modules::codex_quota_sync::publish(&current);
+    }
+    Ok(())
+}
+
 /// 从本地文件导入 Codex 账号（支持多种 JSON 格式）
 pub async fn import_from_files(file_paths: Vec<String>) -> Result<CodexFileImportResult, String> {
     use std::path::Path;
@@ -471,7 +501,12 @@ async fn update_api_key_bound_oauth_account_with_bound(
             &account,
             &bound_oauth_account,
         )?;
-        activate_provider_gateway_after_switch_if_needed(&codex_home, &account).await?;
+        activate_provider_gateway_after_switch_if_needed(
+            &codex_home,
+            &account,
+            Some(&bound_oauth_account),
+        )
+        .await?;
     }
 
     Ok(account)
@@ -680,9 +715,20 @@ pub fn update_account_egress_proxy(
     }
     if disabled && egress_proxy_url.is_some() { return Err("PROXY_INVALID_URL".into()); }
     account.egress_proxy_disabled = disabled;
+    account.egress_proxy_client_defaults = false;
     let normalized = normalize_optional_value(egress_proxy_url);
     account.egress_proxy_url = normalized.as_deref()
         .map(crate::modules::codex_proxy_runtime::normalize_binding).transpose()?;
+    save_account(&account)?;
+    Ok(account)
+}
+
+pub fn update_account_client_proxy_defaults(account_id: &str) -> Result<CodexAccount, String> {
+    let mut account = load_account(account_id).ok_or("PROXY_ACCOUNT_NOT_FOUND")?;
+    if !crate::modules::codex_account_proxy::eligible(&account) { return Err("PROXY_ACCOUNT_UNSUPPORTED".into()); }
+    account.egress_proxy_url = None;
+    account.egress_proxy_disabled = false;
+    account.egress_proxy_client_defaults = true;
     save_account(&account)?;
     Ok(account)
 }
@@ -1004,7 +1050,13 @@ fn pick_quota_alert_recommendation(
     pick_best_candidate(candidates)
 }
 
-pub fn pick_auto_switch_target_if_needed() -> Result<Option<CodexAccount>, String> {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CodexAutoSwitchSelection {
+    pub current_id: String,
+    pub target_id: String,
+}
+
+pub(crate) fn pick_auto_switch_target_if_needed() -> Result<Option<CodexAutoSwitchSelection>, String> {
     // 平台在「平台布局」中被禁用时不自动切号
     if !crate::modules::tray_layout::is_platform_enabled("codex") {
         return Ok(None);
@@ -1087,7 +1139,10 @@ pub fn pick_auto_switch_target_if_needed() -> Result<Option<CodexAccount>, Strin
             return Ok(None);
         }
 
-        Ok(pick_best_candidate(candidates))
+        Ok(pick_best_candidate(candidates).map(|target| CodexAutoSwitchSelection {
+            current_id,
+            target_id: target.id,
+        }))
     })();
 
     CODEX_AUTO_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);

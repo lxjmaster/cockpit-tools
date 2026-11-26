@@ -1374,6 +1374,52 @@ fn profile_mutation_lock_allows_one_writer_and_rejects_the_concurrent_writer() {
         .expect("profile lease should be reusable after release");
 }
 
+#[cfg(any(unix, target_os = "windows"))]
+#[test]
+fn profile_mutation_lock_direct_home_still_contends_with_the_linked_home() {
+    use std::fs;
+    use std::io::{Error, ErrorKind};
+
+    let temp = tempfile::tempdir().unwrap();
+    let standard = temp.path().join(".codex");
+    let home = temp.path().join("自定义 Codex Home");
+    let unrelated = temp.path().join("different-home");
+    fs::create_dir(&home).unwrap();
+    fs::create_dir(&unrelated).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&home, &standard).unwrap();
+    #[cfg(target_os = "windows")]
+    junction::create(&home, &standard).unwrap();
+    let path = standard
+        .join(".cockpit-profile-mutation-locks")
+        .join("profile-test.lock");
+    let blocked_junction = Error::from_raw_os_error(448);
+
+    let direct = super::direct_codex_profile_lock_path(&path, &home, &blocked_junction).unwrap();
+    assert_eq!(direct.file_name(), path.file_name());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert_eq!(
+        fs::create_dir(&direct).unwrap_err().kind(),
+        ErrorKind::AlreadyExists
+    );
+    fs::remove_dir(&path).unwrap();
+    fs::create_dir(&direct).unwrap();
+    assert_eq!(
+        fs::create_dir(&path).unwrap_err().kind(),
+        ErrorKind::AlreadyExists
+    );
+
+    assert!(super::direct_codex_profile_lock_path(&path, &unrelated, &blocked_junction).is_none());
+    assert!(super::direct_codex_profile_lock_path(&path, &standard, &blocked_junction).is_none());
+    assert!(super::direct_codex_profile_lock_path(
+        &path,
+        &home,
+        &Error::new(ErrorKind::PermissionDenied, "different failure")
+    )
+    .is_none());
+}
+
 #[test]
 fn account_switch_commits_only_after_runtime_stop_hook() {
     let _lock = crate::modules::test_support::env_lock()
@@ -1436,6 +1482,65 @@ fn account_switch_commits_only_after_runtime_stop_hook() {
         load_account_index().current_account_id.as_deref(),
         Some(account.id.as_str())
     );
+}
+
+#[test]
+fn account_switch_bound_provider_does_not_reenter_token_lock_after_runtime_stop() {
+    let _lock = crate::modules::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let env = TestEnvGuard::new("codex-switch-bound-provider-lock");
+    let now = chrono::Utc::now().timestamp();
+    let expiration = now + 302;
+    let mut tokens = make_codex_tokens(
+        "bound-switch@example.com", "acc-bound", "org-bound", "bound", "fixture-refresh",
+    );
+    tokens.access_token = make_jwt(serde_json::json!({
+        "exp": expiration,
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acc-bound", "organization_id": "org-bound"}
+    }));
+    let mut oauth = upsert_account(tokens).unwrap();
+    oauth.egress_proxy_url = Some("http://127.0.0.1:1".into());
+    save_account(&oauth).unwrap();
+    let mut provider = CodexAccount::new_api_key(
+        "bound-provider-switch".into(), "relay@example.invalid".into(), "fixture-key".into(),
+        CodexApiProviderMode::Custom, Some("https://relay.example.invalid/v1".into()),
+        Some("fixture-relay".into()), Some("Fixture relay".into()), vec!["gpt-5.6-sol".into()],
+    );
+    provider.api_instance_access_mode = Some("gateway".into());
+    provider.bound_oauth_account_id = Some(oauth.id.clone());
+    save_account(&provider).unwrap();
+    assert!(crate::modules::codex_local_access::account_requires_provider_gateway(
+        &load_account(&provider.id).unwrap()
+    ));
+    assert!(!super::managed_account_tokens_need_refresh(&oauth));
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            super::switch_account_managed_with_before_commit(&provider.id, || async {
+                // Wait until the token reaches the refresh margin after preflight.
+                while !super::managed_account_tokens_need_refresh(&oauth) {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                assert!(expiration > chrono::Utc::now().timestamp());
+                Ok(())
+            }),
+        )
+        .await
+        .expect("provider configuration must not wait on its own OAuth lock")
+        .unwrap();
+    });
+    let auth: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.codex_home().join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"]["access_token"], oauth.tokens.access_token);
+    assert_eq!(load_account_index().current_account_id.as_deref(), Some(provider.id.as_str()));
+    let base_url = super::configured_provider_base_url(&env.codex_home()).unwrap();
+    let base_url = url::Url::parse(&base_url).unwrap();
+    assert_eq!(base_url.host_str(), Some("localhost"));
+    assert_eq!(base_url.path(), "/v1");
+    assert!(base_url.port().is_some());
 }
 
 #[test]
@@ -2618,6 +2723,46 @@ fn try_parse_pending_oauth_delimited_line_rejects_non_email() {
 }
 
 #[test]
+fn import_json_with_utf8_bom_is_recognized_in_both_import_paths() {
+    let _lock = crate::modules::test_support::env_lock()
+        .lock().unwrap_or_else(|error| error.into_inner());
+    let _env = TestEnvGuard::new("codex-json-import-utf8-bom");
+    let account = serde_json::json!({
+        "auth_mode": "apikey",
+        "OPENAI_API_KEY": "sk-fixture-bom",
+        "base_url": "https://relay.example.invalid/v1",
+    });
+    let single = format!("\u{feff}{}", serde_json::to_string_pretty(&account).unwrap());
+    let multiple = format!("\u{feff}{}", serde_json::to_string_pretty(&[&account]).unwrap());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let first = runtime.block_on(import_from_json(&single)).unwrap();
+    let again = runtime.block_on(import_from_json(&multiple)).unwrap();
+    assert_eq!(first[0].id, again[0].id);
+    assert_eq!(first[0].api_base_url.as_deref(), Some("https://relay.example.invalid/v1"));
+    for value in [&single, &multiple] {
+        assert_eq!(super::codex_batch_import_values_from_content(value).unwrap(), vec![account.clone()]);
+    }
+    let invalid = runtime.block_on(import_from_json("\u{feff}{\"auth_mode\":\"apikey\"}"));
+    assert!(invalid.unwrap_err().contains("缺少 OPENAI_API_KEY"));
+}
+
+#[test]
+fn batch_import_rejects_invalid_single_line_json_and_keeps_valid_json_lines() {
+    for content in [r#"{"auth_mode":}"#, "\u{feff}[{\"auth_mode\":\"apikey\"}"] {
+        let error = super::codex_batch_import_values_from_content(content).unwrap_err();
+        assert!(error.contains("无法解析 JSON"), "{error}");
+    }
+
+    let rows = super::codex_batch_import_values_from_content(
+        "{\"auth_mode\":\"apikey\"}\n{\"auth_mode\":\"oauth\"}",
+    ).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["auth_mode"], "apikey");
+    assert_eq!(rows[1]["auth_mode"], "oauth");
+    assert!(super::codex_batch_import_values_from_content("[]").unwrap().is_empty());
+}
+
+#[test]
 fn import_auth_file_tokens_preserves_sensitive_note_metadata() {
     let _lock = crate::modules::test_support::env_lock()
         .lock()
@@ -3035,6 +3180,67 @@ fn reauth_updates_explicit_target_account_even_when_identity_changes() {
     let accounts = list_accounts_checked().expect("list accounts");
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].id, existing.id);
+}
+
+#[test]
+fn reauth_preserves_the_record_when_verified_oauth_email_changes() {
+    let _lock = crate::modules::test_support::env_lock()
+        .lock().unwrap_or_else(|error| error.into_inner());
+    let _env = TestEnvGuard::new("codex-reauth-email-change");
+    let mut original = upsert_account(make_codex_tokens(
+        "before@example.com", "workspace", "org", "stable-user", "rt-before",
+    )).unwrap();
+    original.account_note = Some("retained note".into());
+    original.user_id = Some("stale-cached-user".into());
+    save_account(&original).unwrap();
+    let mut index = load_account_index();
+    index.current_account_id = Some(original.id.clone());
+    save_account_index(&index).unwrap();
+
+    for tokens in [
+        make_codex_tokens("after@example.com", "workspace", "org", "other-user", "rt-wrong"),
+        make_codex_tokens("after@example.com", "other-workspace", "org", "stable-user", "rt-wrong"),
+        make_codex_tokens("after@example.com", "workspace", "other-org", "stable-user", "rt-wrong"),
+    ] {
+        let error = upsert_account_for_reauth(tokens, &original.id).unwrap_err();
+        assert!(error.starts_with("CODEX_OAUTH_RESTART_REQUIRED: "));
+    }
+    assert_eq!(load_account(&original.id).unwrap().tokens.refresh_token.as_deref(), Some("rt-before"));
+    let saved = upsert_account_for_reauth(make_codex_tokens(
+        "after@example.com", "workspace", "org", "stable-user", "rt-after",
+    ), &original.id).unwrap();
+    assert_eq!(saved.id, original.id);
+    assert_eq!(saved.email, "after@example.com");
+    let detail = load_account(&original.id).unwrap();
+    assert_eq!(detail.email, saved.email);
+    assert_eq!(detail.account_note.as_deref(), Some("retained note"));
+    assert_eq!(detail.tokens.refresh_token.as_deref(), Some("rt-after"));
+    let index = load_account_index();
+    assert_eq!(index.current_account_id.as_deref(), Some(original.id.as_str()));
+    assert_eq!(index.accounts.len(), 1);
+    assert_eq!(index.accounts[0].email, saved.email);
+}
+
+#[test]
+fn reauth_email_change_never_deletes_a_conflicting_account() {
+    let _lock = crate::modules::test_support::env_lock()
+        .lock().unwrap_or_else(|error| error.into_inner());
+    let _env = TestEnvGuard::new("codex-reauth-email-conflict");
+    let original = upsert_account(make_codex_tokens(
+        "before@example.com", "workspace", "org", "stable-user", "rt-before",
+    )).unwrap();
+    let mut conflict = upsert_account(make_codex_tokens(
+        "after@example.com", "workspace", "org", "other-user", "rt-conflict",
+    )).unwrap();
+    conflict.user_id = Some("user-stable-user".into());
+    save_account(&conflict).unwrap();
+    let error = upsert_account_for_reauth(make_codex_tokens(
+        "after@example.com", "workspace", "org", "stable-user", "rt-after",
+    ), &original.id).unwrap_err();
+    assert!(error.contains("已存在"));
+    assert_eq!(load_account(&original.id).unwrap().tokens.refresh_token.as_deref(), Some("rt-before"));
+    assert_eq!(load_account(&conflict.id).unwrap().tokens.refresh_token.as_deref(), Some("rt-conflict"));
+    assert_eq!(load_account_index().accounts.len(), 2);
 }
 
 #[test]
@@ -3471,92 +3677,6 @@ fn client_runtime_allows_expired_id_token_when_access_token_is_valid() {
 }
 
 #[test]
-fn official_account_check_accepts_target_account_key() {
-    let account = CodexAccount::new(
-        "codex_account_check".to_string(),
-        "check@example.com".to_string(),
-        make_codex_tokens(
-            "check@example.com",
-            "3a7dc3f2-ea90-4456-9426-a46bd8b3e6f3",
-            "org-check",
-            "check",
-            "rt-check",
-        ),
-    );
-    let payload = serde_json::json!({
-        "accounts": {
-            "3a7dc3f2-ea90-4456-9426-a46bd8b3e6f3": {
-                "account": {
-                    "account_id": "3a7dc3f2-ea90-4456-9426-a46bd8b3e6f3",
-                    "account_residency_region": "no_constraint"
-                },
-                "can_access_with_session": true
-            }
-        },
-        "account_ordering": ["3a7dc3f2-ea90-4456-9426-a46bd8b3e6f3"]
-    });
-
-    super::validate_account_check_payload(&payload, &account)
-        .expect("target account should pass official account check validation");
-}
-
-#[test]
-fn official_account_check_rejects_another_account() {
-    let account = CodexAccount::new(
-        "codex_account_check_mismatch".to_string(),
-        "check-mismatch@example.com".to_string(),
-        make_codex_tokens(
-            "check-mismatch@example.com",
-            "3a7dc3f2-ea90-4456-9426-a46bd8b3e6f3",
-            "org-check",
-            "check-mismatch",
-            "rt-check-mismatch",
-        ),
-    );
-    let payload = serde_json::json!({
-        "accounts": {
-            "6a7dc3f2-ea90-4456-9426-a46bd8b3e6f9": {
-                "name": "Another"
-            }
-        },
-        "account_ordering": ["6a7dc3f2-ea90-4456-9426-a46bd8b3e6f9"]
-    });
-
-    let error = super::validate_account_check_payload(&payload, &account)
-        .expect_err("another account must not pass target account validation");
-    assert!(error.message.contains("与目标账号不一致"));
-}
-
-#[test]
-fn official_account_check_rejects_session_without_account_access() {
-    let account = CodexAccount::new(
-        "codex_account_check_denied".to_string(),
-        "check-denied@example.com".to_string(),
-        make_codex_tokens(
-            "check-denied@example.com",
-            "3a7dc3f2-ea90-4456-9426-a46bd8b3e6f3",
-            "org-check",
-            "check-denied",
-            "rt-check-denied",
-        ),
-    );
-    let payload = serde_json::json!({
-        "accounts": {
-            "3a7dc3f2-ea90-4456-9426-a46bd8b3e6f3": {
-                "account": {
-                    "account_id": "3a7dc3f2-ea90-4456-9426-a46bd8b3e6f3"
-                },
-                "can_access_with_session": false
-            }
-        }
-    });
-
-    let error = super::validate_account_check_payload(&payload, &account)
-        .expect_err("session without account access must be rejected");
-    assert!(error.message.contains("不允许当前登录态访问目标账号"));
-}
-
-#[test]
 fn id_token_within_refresh_lead_does_not_require_runtime_refresh() {
     let mut account = CodexAccount::new(
         "codex_id_token_refresh_lead".to_string(),
@@ -3882,359 +4002,6 @@ fn expired_access_token_only_account_requires_reauth_on_prepare() {
         .as_deref()
         .unwrap_or_default()
         .contains("缺少 refresh_token"));
-}
-
-#[test]
-fn authority_snapshot_requires_newer_refresh_marker() {
-    let mut account = CodexAccount::new(
-        "codex_test".to_string(),
-        "demo@example.com".to_string(),
-        make_codex_tokens(
-            "demo@example.com",
-            "acc-current",
-            "org-current",
-            "old",
-            "rt-old",
-        ),
-    );
-    account.account_id = Some("acc-current".to_string());
-    account.organization_id = Some("org-current".to_string());
-    account.token_updated_at = Some(2000);
-
-    let snapshot = LocalCodexOAuthSnapshot {
-        tokens: make_codex_tokens(
-            "demo@example.com",
-            "acc-current",
-            "org-current",
-            "new",
-            "rt-new",
-        ),
-        email: "demo@example.com".to_string(),
-        user_id: Some("user-current".to_string()),
-        subscription_active_until: None,
-        account_id: Some("acc-current".to_string()),
-        organization_id: Some("org-current".to_string()),
-        last_refresh_at: Some(1000),
-    };
-    assert!(!should_accept_authority_snapshot(&account, &snapshot));
-
-    let newer_snapshot = LocalCodexOAuthSnapshot {
-        last_refresh_at: Some(3000),
-        ..snapshot
-    };
-    assert!(should_accept_authority_snapshot(&account, &newer_snapshot));
-}
-
-#[test]
-fn authority_snapshot_with_newer_marker_but_older_access_token_is_rejected() {
-    let mut account = CodexAccount::new(
-        "codex_test_monotonic".to_string(),
-        "demo@example.com".to_string(),
-        make_codex_tokens(
-            "demo@example.com",
-            "acc-current",
-            "org-current",
-            "current",
-            "rt-current",
-        ),
-    );
-    account.account_id = Some("acc-current".to_string());
-    account.organization_id = Some("org-current".to_string());
-    account.tokens.access_token = make_jwt(serde_json::json!({
-        "exp": 20_000i64,
-        "https://api.openai.com/auth": { "chatgpt_account_id": "acc-current" }
-    }));
-    account.token_updated_at = Some(2_000);
-
-    let mut snapshot_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "older",
-        "rt-older",
-    );
-    snapshot_tokens.access_token = make_jwt(serde_json::json!({
-        "exp": 10_000i64,
-        "https://api.openai.com/auth": { "chatgpt_account_id": "acc-current" }
-    }));
-    let snapshot = LocalCodexOAuthSnapshot {
-        tokens: snapshot_tokens,
-        email: "demo@example.com".to_string(),
-        user_id: Some("user-current".to_string()),
-        subscription_active_until: None,
-        account_id: Some("acc-current".to_string()),
-        organization_id: Some("org-current".to_string()),
-        last_refresh_at: Some(3_000),
-    };
-
-    assert!(!should_accept_authority_snapshot(&account, &snapshot));
-}
-
-#[test]
-fn runtime_snapshot_freshness_prefers_latest_official_refresh() {
-    let mut older_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "older-runtime",
-        "rt-older-runtime",
-    );
-    older_tokens.access_token = make_jwt(serde_json::json!({
-        "exp": 10_000i64,
-        "https://api.openai.com/auth": { "chatgpt_account_id": "acc-current" }
-    }));
-    let older = LocalCodexOAuthSnapshot {
-        tokens: older_tokens,
-        email: "demo@example.com".to_string(),
-        user_id: Some("user-current".to_string()),
-        subscription_active_until: None,
-        account_id: Some("acc-current".to_string()),
-        organization_id: Some("org-current".to_string()),
-        last_refresh_at: Some(2_000),
-    };
-    let mut newer_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "newer-runtime",
-        "rt-newer-runtime",
-    );
-    newer_tokens.access_token = make_jwt(serde_json::json!({
-        "exp": 20_000i64,
-        "https://api.openai.com/auth": { "chatgpt_account_id": "acc-current" }
-    }));
-    let newer = LocalCodexOAuthSnapshot {
-        tokens: newer_tokens,
-        // 即使运行态文件的 last_refresh 标记较旧，也优先采用有效期更晚的 access_token。
-        last_refresh_at: Some(1_000),
-        ..older.clone()
-    };
-
-    assert!(
-        super::local_oauth_snapshot_freshness_key(&newer)
-            > super::local_oauth_snapshot_freshness_key(&older)
-    );
-}
-
-#[test]
-fn runtime_authority_sync_writes_only_the_newest_running_profile() {
-    let _lock = crate::modules::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
-    let env = TestEnvGuard::new("codex-runtime-authority-selection-test");
-    let mut stored_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "stored",
-        "rt-stored",
-    );
-    stored_tokens.access_token = make_jwt(serde_json::json!({
-        "exp": 5_000i64,
-        "https://api.openai.com/auth": { "chatgpt_account_id": "acc-current" }
-    }));
-    let account = seed_oauth_account(stored_tokens);
-
-    let mut older_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "older-runtime",
-        "rt-older-runtime",
-    );
-    older_tokens.access_token = make_jwt(serde_json::json!({
-        "exp": 10_000i64,
-        "https://api.openai.com/auth": { "chatgpt_account_id": "acc-current" }
-    }));
-    let older_dir = env.codex_home().join("instance-older");
-    write_oauth_auth_file(&older_dir, &older_tokens, "acc-current");
-
-    let mut newer_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "newer-runtime",
-        "rt-newer-runtime",
-    );
-    newer_tokens.access_token = make_jwt(serde_json::json!({
-        "exp": 20_000i64,
-        "https://api.openai.com/auth": { "chatgpt_account_id": "acc-current" }
-    }));
-    let newer_dir = env.codex_home().join("instance-newer");
-    write_oauth_auth_file(&newer_dir, &newer_tokens, "acc-current");
-
-    assert!(
-        super::sync_account_from_runtime_authority_dirs(&account.id, &[older_dir, newer_dir])
-            .expect("sync newest runtime authority")
-    );
-    let persisted = load_account(&account.id).expect("load synced account");
-    assert_eq!(persisted.tokens.access_token, newer_tokens.access_token);
-    assert_eq!(
-        persisted.tokens.refresh_token.as_deref(),
-        newer_tokens.refresh_token.as_deref()
-    );
-}
-
-#[test]
-fn reauth_consumer_sync_keeps_running_official_profile_unchanged() {
-    let _lock = crate::modules::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
-    let env = TestEnvGuard::new("codex-reauth-local-store-only-test");
-    let account = seed_oauth_account(make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "reauth-new",
-        "rt-reauth-new",
-    ));
-    let runtime_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "runtime-current",
-        "rt-runtime-current",
-    );
-    write_oauth_auth_file(&env.codex_home(), &runtime_tokens, "acc-current");
-
-    tokio::runtime::Runtime::new()
-        .expect("create runtime")
-        .block_on(super::sync_bound_oauth_consumers_after_reauth(&account.id))
-        .expect("sync reauthorized local consumers");
-
-    let persisted_runtime = super::load_local_oauth_snapshot_from_official_store(&env.codex_home())
-        .expect("official runtime snapshot");
-    assert_eq!(
-        persisted_runtime.tokens.access_token,
-        runtime_tokens.access_token
-    );
-    assert_eq!(
-        persisted_runtime.tokens.refresh_token,
-        runtime_tokens.refresh_token
-    );
-    let persisted_account = load_account(&account.id).expect("local Cockpit account");
-    assert_eq!(
-        persisted_account.tokens.access_token,
-        account.tokens.access_token
-    );
-}
-
-#[test]
-fn default_auth_store_prefers_auth_json_over_keychain() {
-    let base_dir = make_temp_dir("codex-auth-store-file-priority-test");
-    let file_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "file",
-        "rt-file",
-    );
-    let keychain_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "keychain",
-        "rt-keychain",
-    );
-    write_oauth_auth_file(&base_dir, &file_tokens, "acc-current");
-
-    let snapshot = super::load_local_oauth_snapshot_from_official_store_with_keychain_reader(
-        &base_dir,
-        |_| Ok(Some(build_oauth_auth_file(&keychain_tokens, "acc-current"))),
-    )
-    .expect("file auth snapshot");
-
-    assert_eq!(snapshot.tokens.access_token, file_tokens.access_token);
-    assert_eq!(snapshot.tokens.refresh_token.as_deref(), Some("rt-file"));
-    fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
-}
-
-#[test]
-fn explicit_keyring_auth_store_prefers_keychain() {
-    let base_dir = make_temp_dir("codex-auth-store-keyring-priority-test");
-    let file_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "file",
-        "rt-file",
-    );
-    let keychain_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "keychain",
-        "rt-keychain",
-    );
-    write_oauth_auth_file(&base_dir, &file_tokens, "acc-current");
-    fs::write(
-        base_dir.join("config.toml"),
-        "cli_auth_credentials_store = \"keyring\"\n",
-    )
-    .expect("write keyring config");
-
-    let snapshot = super::load_local_oauth_snapshot_from_official_store_with_keychain_reader(
-        &base_dir,
-        |_| Ok(Some(build_oauth_auth_file(&keychain_tokens, "acc-current"))),
-    )
-    .expect("keychain auth snapshot");
-
-    assert_eq!(snapshot.tokens.access_token, keychain_tokens.access_token);
-    assert_eq!(
-        snapshot.tokens.refresh_token.as_deref(),
-        Some("rt-keychain")
-    );
-    fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
-}
-
-#[test]
-fn switch_presync_persists_current_rotated_refresh_token_before_overwrite() {
-    let _lock = crate::modules::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
-    let env = TestEnvGuard::new("codex-switch-presync-current-auth-test");
-    let mut current = seed_oauth_account(make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "stored",
-        "rt-stored",
-    ));
-    current.token_updated_at = Some(1);
-    save_account(&current).expect("make stored credential older than official refresh");
-    let target = upsert_account(make_codex_tokens(
-        "target@example.com",
-        "acc-target",
-        "org-target",
-        "target",
-        "rt-target",
-    ))
-    .expect("seed target account");
-    assert_ne!(target.id, current.id);
-    assert_eq!(
-        load_account_index().current_account_id.as_deref(),
-        Some(current.id.as_str())
-    );
-
-    let rotated_tokens = make_codex_tokens(
-        "demo@example.com",
-        "acc-current",
-        "org-current",
-        "rotated",
-        "rt-rotated",
-    );
-    write_oauth_auth_file(&env.codex_home(), &rotated_tokens, "acc-current");
-
-    assert!(
-        super::sync_account_from_runtime_authority_dirs(&current.id, &[env.codex_home()])
-            .expect("sync active official account")
-    );
-    let persisted = load_account(&current.id).expect("load current account after presync");
-    assert_eq!(persisted.tokens.access_token, rotated_tokens.access_token);
-    assert_eq!(
-        persisted.tokens.refresh_token.as_deref(),
-        Some("rt-rotated")
-    );
 }
 
 #[test]

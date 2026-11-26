@@ -60,22 +60,24 @@ function render(platform: string, names: string[], free = false) {
 
 for (const platform of ['antigravity', 'antigravity_ide']) {
   test(`${platform} renders all five independent quota windows`, () => {
-    const html = render(platform, ['3p-5h', '3p-weekly', 'gemini-5h', 'gemini-weekly', 'gemini-argon-wtu-weekly']);
+    const html = render(platform, ['3p-5h', '3p-weekly', 'gemini-5h', 'gemini-weekly', 'gemini-carbon-wtu-weekly', 'gemini-argon-wtu-weekly']);
     assert.equal((html.match(/class="floating-card-quota-row"/g) ?? []).length, 5);
-    for (const label of ['Claude (5h)', 'Claude (Weekly)', 'Gemini (5h)', 'Gemini (Weekly)', 'Gemini 4 Argon (Weekly)']) assert.ok(html.includes(label), label);
+    for (const label of ['Claude (5h)', 'Claude (Weekly)', 'Gemini (5h)', 'Gemini (Weekly)', 'Gemini 4 Carbon (Weekly)']) assert.ok(html.includes(label), label);
+    assert.doesNotMatch(html, /Gemini 4 Argon \(Weekly\)/);
     assert.match(html, /width:0%/);
     assert.match(html, /80%/);
   });
-  test(`${platform} retains Gemini weekly without an Argon bucket`, () => {
-    const html = render(platform, ['3p-5h', '3p-weekly', 'gemini-5h', 'gemini-weekly', 'gemini-4-argon-high']);
+  test(`${platform} ignores Argon models and legacy Argon quota buckets`, () => {
+    const html = render(platform, ['3p-5h', '3p-weekly', 'gemini-5h', 'gemini-weekly', 'gemini-4-argon-high', 'gemini-argon-wtu-weekly']);
     assert.equal((html.match(/class="floating-card-quota-row"/g) ?? []).length, 4);
     assert.ok(html.includes('Gemini (Weekly)'));
     assert.doesNotMatch(html, /Gemini 4 Argon \(Weekly\)/);
   });
   test(`${platform} retains all three free-tier weekly windows`, () => {
-    const html = render(platform, ['3p-weekly', 'gemini-weekly', 'gemini-argon-wtu-weekly'], true);
+    const html = render(platform, ['3p-weekly', 'gemini-weekly', 'gemini-carbon-wtu-weekly', 'argon:weekly'], true);
     assert.equal((html.match(/class="floating-card-quota-row"/g) ?? []).length, 3);
-    assert.ok(html.includes('Gemini 4 Argon (Weekly)'));
+    assert.ok(html.includes('Gemini 4 Carbon (Weekly)'));
+    assert.doesNotMatch(html, /Gemini 4 Argon \(Weekly\)/);
     assert.ok(!html.includes('(5h)'));
   });
   test(`${platform} does not synthesize missing quota windows`, () => {
@@ -84,7 +86,7 @@ for (const platform of ['antigravity', 'antigravity_ide']) {
   });
 }
 
-test('Cursor shows its primary quota bars and the enabled On-Demand cap', async () => {
+test('Cursor shows its three included quotas and the separate On-Demand quota', async () => {
   const store = (await server.ssrLoadModule('/src/stores/useCursorAccountStore.ts')).useCursorAccountStore;
   const account = { id: 'cursor-test', email: 'cursor@example.com', access_token: '', created_at: 0, last_used: 0,
     cursor_usage_raw: { individualUsage: { plan: { totalPercentUsed: 20, autoPercentUsed: 30, apiPercentUsed: 40 }, onDemand: { used: 100, limit: 1000, enabled: true } } } };

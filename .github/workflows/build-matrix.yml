@@ -184,6 +184,12 @@ jobs:
             platform: windows-latest
             target: x86_64-pc-windows-msvc
             executable: target/x86_64-pc-windows-msvc/ci/cockpit-tools.exe
+          - label: Windows ARM64
+            cache_target: "windows-aarch64"
+            icon: "🪟"
+            platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            executable: target/aarch64-pc-windows-msvc/ci/cockpit-tools.exe
 
     steps:
       - name: "📥 Checkout repository"
@@ -224,6 +230,16 @@ jobs:
       - name: "🧪 Test core Rust library"
         if: matrix.platform == 'ubuntu-22.04'
         run: cargo test --package cockpit-core -- --test-threads=1
+
+      - name: "⚙️ Set up Node.js for parity verification"
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: "🧪 Verify Codex protocol parity"
+        if: matrix.platform == 'ubuntu-22.04'
+        run: node scripts/check_codex_protocol_parity.cjs
 
       - name: "🧱 Compile and link application"
         run: |

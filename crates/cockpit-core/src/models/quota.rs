@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+#[path = "antigravity_quota_summary.rs"]
+mod antigravity_quota_summary;
+pub use antigravity_quota_summary::QuotaSummaryGroup;
+
 /// 模型配额信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelQuota {
@@ -8,6 +12,8 @@ pub struct ModelQuota {
     pub display_name: Option<String>,
     pub percentage: i32, // 剩余百分比 0-100
     pub reset_time: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_exhausted: Option<bool>,
 }
 
 /// AI 积分信息（来自 loadCodeAssist paidTier.availableCredits）
@@ -29,6 +35,8 @@ pub struct QuotaData {
     pub quota_summary_stale: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_summary_updated_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_summary_groups: Option<Vec<QuotaSummaryGroup>>,
     #[serde(default)]
     pub is_forbidden: bool,
     /// 订阅等级 (FREE/PRO/ULTRA)
@@ -53,6 +61,7 @@ impl QuotaData {
             last_updated: chrono::Utc::now().timestamp(),
             quota_summary_stale: false,
             quota_summary_updated_at: None,
+            quota_summary_groups: None,
             is_forbidden: false,
             subscription_tier: None,
             credits: Vec::new(),
@@ -74,6 +83,7 @@ impl QuotaData {
             display_name,
             percentage,
             reset_time,
+            summary_exhausted: None,
         });
     }
 }

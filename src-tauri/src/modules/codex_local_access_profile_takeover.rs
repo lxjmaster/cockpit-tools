@@ -444,6 +444,22 @@ pub(crate) fn has_managed_voice_gateway_config(config_text: &str) -> bool {
         && has_managed_realtime_sideband_override(&doc)
 }
 
+const LOCAL_ACCESS_CLIENT_RETRY_KEYS: [&str; 2] = ["request_max_retries", "stream_max_retries"];
+
+/// Cockpit owns pre-response recovery. A second client retry loop would replay
+/// the whole pool after our terminal 504/SSE error (Codex ignores retry hints).
+/// This also deliberately disables client reconnects after a partial stream.
+fn apply_local_access_client_retry_policy(provider: &mut toml_edit::Table) -> bool {
+    let mut changed = false;
+    for key in LOCAL_ACCESS_CLIENT_RETRY_KEYS {
+        if provider.get(key).and_then(|item| item.as_integer()) != Some(0) {
+            provider[key] = value(0);
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn remove_codex_local_access_config(config_text: &str) -> Result<String, String> {
     remove_codex_local_access_config_with_realtime_ownership(config_text, false)
 }
@@ -470,6 +486,7 @@ fn remove_codex_local_access_config_with_realtime_ownership(
     if has_managed_realtime_sideband_override(&doc) || managed_realtime_sideband {
         doc.remove("experimental_realtime_ws_base_url");
     }
+    crate::modules::codex_model_catalog_capabilities::remove_managed_api_service_discovery(&mut doc);
     let _ = doc.remove("model_provider");
     if doc
         .get("model_catalog_json")
@@ -489,6 +506,11 @@ fn remove_codex_local_access_config_with_realtime_ownership(
             // keep the provider definition for history replay, but never leave
             // the temporary credential active after detaching the takeover.
             let _ = provider.remove("experimental_bearer_token");
+            for key in LOCAL_ACCESS_CLIENT_RETRY_KEYS {
+                if provider.get(key).and_then(|item| item.as_integer()) == Some(0) {
+                    let _ = provider.remove(key);
+                }
+            }
             let remove_headers = provider
                 .get_mut("http_headers")
                 .map(|headers| {
@@ -620,6 +642,14 @@ fn restore_config_toml_from_takeover_backup_with_realtime_ownership(
         .and_then(|item| item.as_str())
         .is_some_and(is_cockpit_managed_model_catalog_name);
     if current_selected_local_access {
+        // Restore only settings that still have our managed value. Preserve a
+        // user's later nonzero edit or deletion instead of replaying a backup.
+        let managed_retry_keys: Vec<_> = LOCAL_ACCESS_CLIENT_RETRY_KEYS.into_iter()
+            .filter(|key| current_doc.get("model_providers")
+                .and_then(|providers| providers.get(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID))
+                .and_then(|provider| provider.get(*key))
+                .and_then(|item| item.as_integer()) == Some(0))
+            .collect();
         let restore_realtime_sideband = has_managed_realtime_sideband_override(&current_doc)
             || managed_realtime_sideband;
         let cleaned = remove_codex_local_access_config_with_realtime_ownership(
@@ -661,6 +691,7 @@ fn restore_config_toml_from_takeover_backup_with_realtime_ownership(
             let provider = providers[CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID]
                 .as_table_mut()
                 .ok_or("config.toml 中 codex_local_access provider 不是合法表结构")?;
+            provider.remove("supports_standalone_web_search");
             for key in [
                 "name",
                 "base_url",
@@ -668,6 +699,7 @@ fn restore_config_toml_from_takeover_backup_with_realtime_ownership(
                 "requires_openai_auth",
                 "experimental_bearer_token",
                 "supports_websockets",
+                "supports_standalone_web_search",
             ] {
                 if let Some(item) = backup_provider.get(key) {
                     provider[key] = item.clone();
@@ -681,6 +713,11 @@ fn restore_config_toml_from_takeover_backup_with_realtime_ownership(
             ] {
                 if let Some(header_value) = provider_header_value(backup_provider, header_name) {
                     set_provider_header_value(provider, header_name, header_value);
+                }
+            }
+            for key in managed_retry_keys {
+                if let Some(item) = backup_provider.get(key) {
+                    provider[key] = item.clone();
                 }
             }
         }

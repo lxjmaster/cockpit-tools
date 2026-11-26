@@ -73,6 +73,10 @@ pub struct ExecutionPolicy {
     pub stream_open_max_attempts: u8,
     /// Zero matches Go: no overall deadline for ordinary requests.
     pub total_timeout: Duration,
+    /// Recovery after the first typed transport failure, shared across routes.
+    /// This does not limit a healthy first attempt or an active response stream.
+    pub network_recovery_timeout: Duration,
+    pub network_recovery_max_failures: u8,
     /// Maximum distinct credentials per selection round, including the first.
     /// Zero means no credential-count limit (pool, time and replay fences still apply).
     pub credential_retries: u16,
@@ -100,10 +104,12 @@ impl Default for ExecutionPolicy {
             account_switch_rebuild: true,
             open_timeout: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(180),
-            image_open_timeout: Duration::from_secs(60),
+            image_open_timeout: Duration::from_secs(600),
             image_idle_timeout: Duration::from_secs(180),
             stream_open_max_attempts: 1,
             total_timeout: Duration::ZERO,
+            network_recovery_timeout: super::network_recovery::DEFAULT_TIMEOUT,
+            network_recovery_max_failures: super::network_recovery::DEFAULT_MAX_FAILURES,
             credential_retries: 0,
             retry_max_delay: Duration::from_secs(1),
             continuous_overload_retry: false,
@@ -129,6 +135,7 @@ impl ExecutionPolicy {
     pub fn for_images(mut self) -> Self {
         self.open_timeout = self.image_open_timeout;
         self.idle_timeout = self.image_idle_timeout;
+        self.network_recovery_timeout = self.network_recovery_timeout.max(self.image_open_timeout);
         self
     }
 }
@@ -338,6 +345,7 @@ pub struct RequestReport {
     pub success: bool,
     pub elapsed: Duration,
     pub usage: Option<Value>,
+    pub input_text_characters: Option<u64>,
     pub error: Option<String>,
     pub error_message: Option<String>,
     pub credential_scope: bool,

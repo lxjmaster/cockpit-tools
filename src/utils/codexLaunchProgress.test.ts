@@ -6,6 +6,9 @@ test('lifecycle and proxy failures remain distinct from authorization errors', (
   assert.equal(codexLaunchErrorKey('CODEX_SWITCH_BINDING_FAILED'), 'codex.launchErrors.bindingFailed');
   assert.equal(codexLaunchErrorKey(new Error('CODEX_PROCESS_SCAN_FAILED')), 'codex.launchErrors.processScanFailed');
   assert.equal(codexLaunchErrorKey('PROXY_ENTRY_PORT_UNAVAILABLE'), 'codex.launchErrors.proxyEntryFailed');
+  assert.equal(codexLaunchErrorKey('CODEX_PROXY_DOTENV_UNAVAILABLE'), 'codex.launchErrors.proxyEnvUnavailable');
+  assert.equal(codexLaunchErrorKey('CODEX_PROXY_DOTENV_CHANGED'), 'codex.launchErrors.proxyEnvChanged');
+  assert.equal(codexLaunchErrorKey('CODEX_PROXY_DOTENV_STOP_FAILED'), 'codex.launchErrors.proxyEnvStopFailed');
   assert.equal(codexLaunchErrorKey('CODEX_SWITCH_AUTH_REQUIRED:{}'), null);
   assert.equal(codexLaunchErrorKey('unknown error or private diagnostic data'), null);
 });
@@ -77,4 +80,17 @@ test('preserves id_token details and normalizes refresh progress into the shared
 
 test('rejects switch events without a target account', () => {
   assert.equal(mapCodexSwitchProgressToLaunch({ step: 'accessToken' }), null);
+});
+
+test('account proxy startup checks are retryable setup failures', () => {
+  assert.equal(codexLaunchErrorKey('PROXY_ENV_CHANGED'), 'codex.proxy.launch.envChanged');
+  assert.equal(codexLaunchErrorKey('PROXY_ENV_STORAGE'), 'codex.proxy.launch.envStorage');
+  assert.equal(codexLaunchErrorKey('PROXY_ENV_UNSUPPORTED'), 'codex.proxy.launch.envUnsupported');
+  assert.equal(codexLaunchErrorKey('PROXY_LAUNCH_STOP_FAILED'), 'codex.proxy.launch.stopFailed');
+});
+
+test('country checks warn without being classified as authorization failures', () => {
+  assert.equal(codexLaunchErrorKey('PROXY_COUNTRY_MISMATCH:JP:SG'), 'codex.proxy.country.mismatch');
+  assert.equal(codexLaunchErrorKey('PROXY_COUNTRY_UNAVAILABLE'), 'codex.proxy.country.unavailable');
+  assert.equal(codexLaunchErrorKey('PROXY_COUNTRY_ROUTE_UNKNOWN'), 'codex.proxy.country.routeUnknown');
 });

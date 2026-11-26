@@ -13,6 +13,8 @@ import type {
   CodexSessionRecord,
   CodexSessionSearchOptions,
   CodexSessionTokenStats,
+  CodexSessionUsageCursor,
+  CodexSessionUsagePage,
   CodexSessionUsageQuery,
   CodexSessionUsageReport,
   CodexSessionUsageSyncResult,
@@ -50,6 +52,7 @@ export async function startInstance(
   options?: {
     transferConflictingAccount?: boolean;
     skipFailedStep?: string;
+    expectedSwitchBinding?: string;
   },
 ): Promise<InstanceProfile> {
   const startedAt = performance.now();
@@ -63,6 +66,9 @@ export async function startInstance(
       transferConflictingAccount:
         options?.transferConflictingAccount === true ? true : null,
       skipFailedStep: options?.skipFailedStep ?? null,
+      ...(options?.expectedSwitchBinding === undefined
+        ? {}
+        : { expectedSwitchBinding: options.expectedSwitchBinding }),
     };
     return await withCodexPathRecovery(
       () => {
@@ -125,6 +131,7 @@ export async function createInstance(payload: {
   launchMode?: InstanceLaunchMode;
   appSpeed?: CodexAppSpeed;
   copySourceInstanceId: string;
+  copyTimeoutSeconds?: number;
   initMode?: "copy" | "empty" | "existingDir" | "cliConfig";
 }): Promise<InstanceProfile> {
   return await invoke("codex_create_instance", {
@@ -137,6 +144,7 @@ export async function createInstance(payload: {
     launchMode: payload.launchMode ?? "app",
     appSpeed: payload.appSpeed ?? "standard",
     copySourceInstanceId: payload.copySourceInstanceId,
+    copyTimeoutSeconds: payload.copyTimeoutSeconds ?? null,
     initMode: payload.initMode ?? "copy",
   });
 }
@@ -421,13 +429,47 @@ export async function querySessionUsage(
   return await invoke("codex_query_session_usage", { query });
 }
 
+export async function querySessionUsageRequests(
+  query: CodexSessionUsageQuery,
+  cursor: CodexSessionUsageCursor | null,
+): Promise<CodexSessionUsagePage> {
+  return await invoke("codex_query_session_usage_requests", { query, cursor });
+}
+
+const sessionUsageScopeFields = [
+  "fromTimestamp", "toTimestamp", "instanceId", "model", "projectKey", "sessionId",
+] as const;
+
+let sessionUsageScan: {
+  query: CodexSessionUsageQuery;
+  promise: Promise<CodexSessionUsageSyncResult>;
+} | undefined;
+
 export async function syncSessionUsage(
   options: { rebuild?: boolean; query?: CodexSessionUsageQuery } = {},
 ): Promise<CodexSessionUsageSyncResult> {
-  return await invoke("codex_sync_session_usage", {
-    rebuild: options.rebuild ?? false,
-    query: options.query ?? {},
-  });
+  const { rebuild = false, query = {} } = options;
+  const active = sessionUsageScan;
+  if (active && !rebuild) {
+    const result = await active.promise;
+    if (
+      sessionUsageScopeFields.every((field) => (active.query[field] ?? null) === (query[field] ?? null))
+      && Boolean(active.query.includeProjects) === Boolean(query.includeProjects)
+    ) {
+      return result;
+    }
+    return { ...result, report: await querySessionUsage(query) };
+  }
+
+  const promise = invoke<CodexSessionUsageSyncResult>("codex_sync_session_usage", { rebuild, query });
+  // An explicit rebuild still goes through the backend's exclusive scan lock.
+  if (active) return await promise;
+  sessionUsageScan = { query, promise };
+  try {
+    return await promise;
+  } finally {
+    sessionUsageScan = undefined;
+  }
 }
 
 export async function moveSessionsToTrashAcrossInstances(
@@ -522,6 +564,23 @@ export async function openSessionLocation(
     instanceId: instanceId ?? null,
     sessionId,
   });
+}
+
+export type CodexSessionResumeTarget = "recentActivity" | "lastCreated" | "previousDesktopSession" | "specific";
+
+export interface CodexSessionResumeSettings {
+  enabled: boolean;
+  target: CodexSessionResumeTarget;
+  threadId: string | null;
+  prompt: string;
+}
+
+export function getCodexSessionResumeSettings(instanceId: string) {
+  return invoke<CodexSessionResumeSettings>("codex_get_session_resume_settings", { instanceId });
+}
+
+export function saveCodexSessionResumeSettings(instanceId: string, settings: CodexSessionResumeSettings) {
+  return invoke<void>("codex_save_session_resume_settings", { instanceId, settings });
 }
 
 /** Open rollout JSONL with the OS default app (#1510). */

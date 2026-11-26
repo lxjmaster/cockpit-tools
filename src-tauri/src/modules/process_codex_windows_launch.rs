@@ -31,6 +31,14 @@ struct CodexRegisteredLaunch {
 
 #[cfg(any(test, target_os = "windows"))]
 const CODEX_REGISTRATION_RESULT_PREFIX: &str = "COCKPIT_CODEX_REGISTRATION:";
+#[cfg(any(test, target_os = "windows"))]
+const CODEX_PACKAGE_CLIENT_NOT_CREATED: &str = "CODEX_PACKAGE_CLIENT_NOT_CREATED: ";
+
+#[cfg(any(test, target_os = "windows"))]
+fn is_codex_package_registration_changed(error: &str) -> bool {
+    error == "CODEX_PACKAGE_REGISTRATION_CHANGED"
+        || error.starts_with("CODEX_PACKAGE_REGISTRATION_CHANGED:")
+}
 
 /// Local manifest data is a launch hint, never proof of current registration.
 /// The activation script still checks the registered family, application and exe.
@@ -150,7 +158,7 @@ fn activate_codex_package_with_refresh(
     let mut result = activate(&package);
     if result
         .as_ref()
-        .is_err_and(|error| error.contains("CODEX_PACKAGE_REGISTRATION_CHANGED"))
+        .is_err_and(|error| is_codex_package_registration_changed(error))
     {
         package = refresh()?;
         result = activate(&package);
@@ -431,6 +439,10 @@ fn launch_codex_via_package_identity(
         extra_args,
         &env,
     )
+    .map_err(|error| match error.strip_prefix(CODEX_PACKAGE_CLIENT_NOT_CREATED) {
+        Some(message) => message.to_owned(),
+        None => error,
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -441,7 +453,7 @@ fn run_codex_package_activation(
     extra_args: &[String],
     env: &[(String, String)],
 ) -> Result<u32, String> {
-    use codex_package_launcher::{LaunchReply, PendingReceipt};
+    use codex_package_launcher::PendingReceipt;
     let receipt = PendingReceipt::new().map_err(|error| error.to_string())?;
     let request = codex_package_launch_request(
         package,
@@ -479,21 +491,7 @@ fn run_codex_package_activation(
     } else {
         Duration::from_millis(100)
     };
-    let result = match receipt.wait(wait) {
-        Some(LaunchReply::Spawned { pid, validation_us, helper_has_console }) => {
-            crate::modules::logger::log_info(&format!("[Codex Start] native package validation_us={validation_us} helper_has_console={helper_has_console} spawned_pid={pid}"));
-            Ok(pid)
-        }
-        Some(LaunchReply::EntryStale) => Err("CODEX_PACKAGE_REGISTRATION_CHANGED: native package entry validation failed before client creation".into()),
-        Some(LaunchReply::Failed { message }) => Err(message),
-        Some(LaunchReply::Validated { .. }) => Err("Unexpected validation-only helper reply".into()),
-        None => match activation {
-            Err(error) if error.starts_with("CODEX_PACKAGE_REGISTRATION_CHANGED")
-                || error.starts_with("CODEX_ACTIVATION_UNCERTAIN:") => Err(error),
-            Err(error) => Err(format!("CODEX_ACTIVATION_UNCERTAIN: {error}")),
-            Ok(_) => Err("CODEX_ACTIVATION_UNCERTAIN: no helper receipt; client creation may already have occurred".into()),
-        }
-    };
+    let result = resolve_codex_package_activation_reply(receipt.wait(wait), activation);
     crate::modules::logger::log_info(&format!(
         "[Codex Start] activation command elapsed_ms={} success={}",
         started.elapsed().as_millis(),
@@ -502,11 +500,58 @@ fn run_codex_package_activation(
     result
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn resolve_codex_package_activation_reply(
+    reply: Option<codex_package_launcher::LaunchReply>,
+    activation: Result<String, String>,
+) -> Result<u32, String> {
+    use codex_package_launcher::LaunchReply;
+    match reply {
+        Some(LaunchReply::Spawned { pid, validation_us, helper_has_console }) => {
+            crate::modules::logger::log_info(&format!("[Codex Start] native package validation_us={validation_us} helper_has_console={helper_has_console} spawned_pid={pid}"));
+            Ok(pid)
+        }
+        Some(LaunchReply::EntryStale) => Err("CODEX_PACKAGE_REGISTRATION_CHANGED: native package entry validation failed before client creation".into()),
+        // A verified failure receipt is emitted only before a client PID exists.
+        Some(LaunchReply::Failed { message }) => Err(format!("{CODEX_PACKAGE_CLIENT_NOT_CREATED}{message}")),
+        Some(LaunchReply::Validated { .. }) => Err("Unexpected validation-only helper reply".into()),
+        None => match activation {
+            Err(error) if is_codex_package_registration_changed(&error)
+                || error.starts_with("CODEX_ACTIVATION_UNCERTAIN:") => Err(error),
+            Err(error) => Err(format!("CODEX_ACTIVATION_UNCERTAIN: {error}")),
+            Ok(_) => Err("CODEX_ACTIVATION_UNCERTAIN: no helper receipt; client creation may already have occurred".into()),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_process_package_family(
+    handle: windows::Win32::Foundation::HANDLE,
+    pid: u32,
+) -> Result<String, String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
+    unsafe {
+        let mut size = 0;
+        let status = GetPackageFamilyName(handle, &mut size, PWSTR::null());
+        if status != ERROR_INSUFFICIENT_BUFFER || size == 0 || size > 32768 {
+            return Err(format!("GetPackageFamilyName pid={pid}: win32={}", status.0));
+        }
+        let mut buffer = vec![0u16; size as usize];
+        let status = GetPackageFamilyName(handle, &mut size, PWSTR(buffer.as_mut_ptr()));
+        if status != ERROR_SUCCESS {
+            return Err(format!("GetPackageFamilyName pid={pid}: win32={}", status.0));
+        }
+        Ok(String::from_utf16_lossy(
+            &buffer[..buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len())],
+        ))
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn verify_codex_process_package(pid: u32, expected_family: &str) -> Result<(), String> {
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
-    use windows::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -514,25 +559,7 @@ fn verify_codex_process_package(pid: u32, expected_family: &str) -> Result<(), S
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
             .map_err(|error| format!("OpenProcess pid={pid}: {error}"))?;
         let result = (|| {
-            let mut size = 0;
-            let status = GetPackageFamilyName(handle, &mut size, PWSTR::null());
-            if status != ERROR_INSUFFICIENT_BUFFER || size == 0 || size > 32768 {
-                return Err(format!(
-                    "GetPackageFamilyName pid={pid}: win32={}",
-                    status.0
-                ));
-            }
-            let mut buffer = vec![0u16; size as usize];
-            let status = GetPackageFamilyName(handle, &mut size, PWSTR(buffer.as_mut_ptr()));
-            if status != ERROR_SUCCESS {
-                return Err(format!(
-                    "GetPackageFamilyName pid={pid}: win32={}",
-                    status.0
-                ));
-            }
-            let actual = String::from_utf16_lossy(
-                &buffer[..buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len())],
-            );
+            let actual = read_windows_process_package_family(handle, pid)?;
             if !actual.eq_ignore_ascii_case(expected_family) {
                 return Err(format!(
                     "Package mismatch pid={pid}: expected={expected_family}, actual={actual}"

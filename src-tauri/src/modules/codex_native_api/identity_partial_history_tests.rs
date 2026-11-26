@@ -67,7 +67,6 @@ fn partial_history_persists_without_claiming_completed_response_or_consuming_it(
     let c = reopened.connection.lock().unwrap();
     for table in [
         "native_rebuild_checkpoints_v1",
-        "native_rebuild_history_v1",
         "native_rebuild_active_v1",
         "native_rebuild_portable_v1",
     ] {
@@ -122,6 +121,24 @@ fn partial_history_restores_omitted_identity_and_rejects_other_callers_threads()
 }
 
 #[test]
+fn partial_history_without_new_input_reuses_only_a_complete_tool_chain() {
+    let (_root, store, binding, _) = fixture();
+    store.observe_event(&binding, &partial(output())).unwrap();
+    let mut empty = next();
+    empty["input"] = json!([]);
+    let expected = expand(&store, &empty).unwrap();
+    for input in [None, Some(Value::Null)] {
+        let mut request = next();
+        if let Some(input) = input {
+            request["input"] = input;
+        } else {
+            request.as_object_mut().unwrap().remove("input");
+        }
+        assert_eq!(expand(&store, &request), Some(expected.clone()));
+    }
+}
+
+#[test]
 fn partial_history_tool_result_can_arrive_later_without_duplicate_calls() {
     let (_root, store, binding, _) = fixture();
     let call = json!({"type":"function_call","name":"write","call_id":"once","arguments":"{}","status":"completed"});
@@ -129,6 +146,9 @@ fn partial_history_tool_result_can_arrive_later_without_duplicate_calls() {
         .observe_event(&binding, &partial(json!([call.clone()])))
         .unwrap();
     assert!(expand(&store, &next()).is_none());
+    let mut no_result = next();
+    no_result.as_object_mut().unwrap().remove("input");
+    assert!(expand(&store, &no_result).is_none());
     let mut request = next();
     request["input"] = json!([{"type":"function_call_output","call_id":"once","output":"already executed"},{"role":"user","content":"continue"}]);
     let full = expand(&store, &request).unwrap();
@@ -258,7 +278,7 @@ fn partial_history_corrupt_chunk_reports_error_without_erasing_original() {
         .connection
         .lock()
         .unwrap()
-        .execute("UPDATE native_rebuild_items_v1 SET body=x'010203'", [])
+        .execute("UPDATE native_partial_history_v1 SET transcript='zstd:corrupt'", [])
         .unwrap();
     assert!(store
         .expand_partial_history("caller", &HeaderMap::new(), &next(), usize::MAX)
@@ -284,7 +304,7 @@ fn partial_history_upgrade_preserves_existing_completed_history() {
         .lock()
         .unwrap()
         .query_row(
-            "SELECT COUNT(*) FROM native_rebuild_history_v1 WHERE response='completed'",
+            "SELECT COUNT(*) FROM native_rebuild_checkpoints_v1 WHERE response='completed'",
             [],
             |r| r.get(0),
         )
@@ -311,14 +331,14 @@ fn partial_history_large_input_round_trips_and_string_continuations_work() {
         .lock()
         .unwrap()
         .query_row(
-            "SELECT SUM(LENGTH(body)) FROM native_rebuild_items_v1",
+            "SELECT SUM(LENGTH(transcript)) FROM native_partial_history_v1",
             [],
             |r| r.get(0),
         )
         .unwrap();
     assert!(
         stored_bytes < 10_000,
-        "partial history must use compressed chunks"
+        "partial history must use inline compression for large transcripts"
     );
 }
 
@@ -338,7 +358,7 @@ fn partial_history_cannot_override_a_different_resource_owner() {
 #[test]
 fn partial_history_disk_failure_rolls_back_and_can_retry_without_losing_history() {
     let (_root, store, binding, _) = fixture();
-    store.connection.lock().unwrap().execute_batch("CREATE TRIGGER fail_partial_chunk BEFORE INSERT ON native_rebuild_items_v1 BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();
+    store.connection.lock().unwrap().execute_batch("CREATE TRIGGER fail_partial_chunk BEFORE INSERT ON native_partial_history_v1 BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();
     assert!(store.observe_event(&binding, &partial(output())).is_err());
     assert_eq!(count(&store), 0);
     let parents: i64 = store

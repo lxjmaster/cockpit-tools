@@ -9,13 +9,9 @@
     "initializeWaiting": "في انتظار تهيئة Antigravity IDE. تابع يدويًا عند اكتمالها.",
     "initializeRetry": "لم تكتمل التهيئة. تأكد من فتح IDE ثم أعد المحاولة.",
     "pathLabel": "مسار التشغيل",
-    "pathConfigured": "مُعدّ",
-    "pathDetected": "اكتُشف تلقائيًا",
-    "pathInvalid": "المسار المُعدّ غير صالح",
-    "pathCheckFailed": "تعذّر التحقق من المسار",
-    "pathSaveAndRetry": "حفظ وإعادة المحاولة",
     "switchAndCopy": "تبديل ونسخ",
     "sharedInstanceStart": "تبديل الحساب المشترك والتشغيل",
+    "ideSharedAccountHint": "بدءًا من Antigravity IDE 2.6، تشترك جميع النسخ في تسجيل دخول واحد إلى Google. يؤثر تبديل الحساب هنا أيضًا على النسخ الأخرى المفتوحة.",
     "sharedInstanceHint": "تبقى نُسخ Antigravity الأخرى مفتوحة وقد تتزامن مع الحساب الجديد.",
     "sharedInstanceRestart": "ستُعاد فقط النسخة المحددة.",
     "lastSharedAccount": "آخر حساب مشترك تم اختياره",
@@ -198,6 +194,22 @@
     "providerClear": "مسح التحديد"
   },
   "common": {
+    "automation": {
+      "invalidPlatform": "منصة حساب غير معروفة. شغّل cockpit-cli account platforms لعرض المعرّفات المدعومة.",
+      "hostUnavailable": "شغّل تطبيق Cockpit Tools لسطح المكتب باستخدام مجلد البيانات هذا، ثم أعد المحاولة.",
+      "responseTimeout": "لم يُرجع Cockpit Tools نتيجة في الوقت المحدد. تحقّق من الحالة الحالية قبل تكرار التغيير.",
+      "versionMismatch": "إصدار بروتوكول أتمتة الحسابات مختلف بين CLI وتطبيق سطح المكتب. حدّثهما معًا.",
+      "unauthorized": "تعذّرت مصادقة طلب أتمتة الحسابات المحلي.",
+      "invalidAccountId": "استخدم معرّف حساب من المنصة المختارة أو قائمة أعضاء خدمة API.",
+      "accountNotFound": "لم يُعثر على الحساب في المنصة المختارة.",
+      "operationFailed": "تعذّر على Cockpit Tools إكمال العملية. راجع سجلات التطبيق.",
+      "appPathMissing": "اضبط مسار العميل في Cockpit Tools ثم أعد محاولة التبديل.",
+      "appPathMissingAfterSwitch": "تم تبديل الحساب. اضبط مسار العميل قبل تشغيله.",
+      "switchBusy": "يجري تبديل حساب لهذا العميل بالفعل. أعد المحاولة بعد اكتماله.",
+      "quotaUnsupported": "لا يدعم هذا النوع من الحسابات تحديث الحصة مباشرةً بهذا الأمر. اعرض الحصة المحفوظة دون --refresh.",
+      "quotaRefreshFailed": "فشل تحديث الحصة الأخير. اعرض الحصة المحفوظة دون --refresh."
+    },
+    "previewTruncated": "يُعرض جزء من المعاينة. يتضمن النسخ أو التنزيل ملف JSON كاملاً.",
     "collapseAll": "طي الكل",
     "expandAll": "توسيع الكل",
     "syncing": "جارٍ المزامنة…",
@@ -260,6 +272,7 @@
       "offline": "غير متصل · بيانات محفوظة"
     },
     "networkErrors": {
+      "recoveryExhausted": "تجاوزت حالات فشل الاتصال المتكررة بالخدمة الأصلية الحد المسموح لاستعادة هذا الطلب. توقفت إعادة المحاولة التلقائية. تحقق من الوكيل أو الشبكة قبل المحاولة مجددًا؛ لا يعني هذا الخطأ نفاد حصة الحساب.",
       "upstream": "الخدمة الأصلية",
       "proxyConnection": "تعذر الاتصال بـ {{target}} عبر الوكيل «{{proxy}}». قد تكون المشكلة في الوكيل أو الشبكة. تحقق من الوكيل أو جرّب عقدة أخرى.",
       "proxyTimeout": "انتهت مهلة الاتصال بـ {{target}} عبر الوكيل «{{proxy}}». قد تكون المشكلة في الوكيل أو الشبكة. تحقق من الوكيل أو جرّب عقدة أخرى.",
@@ -269,6 +282,10 @@
       "directTimeout": "انتهت مهلة الاتصال بـ {{target}}. تحقق من الشبكة وحاول مجددًا."
     },
     "codexUsage": {
+      "responseSpeed": "سرعة الرد",
+      "overallSpeedWithThinking": "السرعة مع التفكير",
+      "streamingSpeed": "سرعة البث",
+      "contextShort": "السياق",
       "title": "الحصة والاستخدام",
       "session": "المحادثة الحالية",
       "available": "متاح",
@@ -323,6 +340,9 @@
       "success": "نجاح",
       "failed": "فشل",
       "cancelled": "ملغى",
+      "clientDisconnected": "انقطع اتصال العميل",
+      "upstreamOverloaded": "الخادم الوسيط مثقل",
+      "requestServiceUnavailable": "الخدمة غير متاحة",
       "incomplete": "تدفق غير مكتمل",
       "recovered": "مسار بديل",
       "official": "تفويض رسمي",
@@ -652,6 +672,7 @@
         "expiresAt": "ينتهي في: {{time}}",
         "unlimited": "حصة غير محدودة",
         "leftPercent": "متبقي {{value}}٪",
+        "weeklyLimitReached": "تم بلوغ الحد الأسبوعي",
         "cachedRefreshFailed": "فشل التحديث؛ يتم عرض آخر بيانات ناجحة",
         "lastSuccessfulQuery": "آخر نجاح: {{time}}",
         "cachedNeedsReauth": "⚠️ يلزم التحقق من الويب للمتابعة (البيانات المخزنة مؤقتًا أدناه)"
@@ -696,6 +717,12 @@
         "singleToken": "مثال مفرد (Token)",
         "singleJson": "مثال مفرد (JSON)",
         "batchJson": "مثال دفعي (JSON)"
+      },
+      "exposeToCodex": {
+        "action": "الاتصال بـ Codex",
+        "inProgress": "جارٍ الاتصال…",
+        "success": "تم الاتصال بـ Codex",
+        "failed": "فشل الاتصال بـ Codex: {{error}}"
       }
     },
     "sessionSharing": {
@@ -886,6 +913,7 @@
     "sortPlaced": "تم النقل إلى الموضع {{position}}.",
     "sortCancelled": "أُلغي الترتيب.",
     "tipWithGroups": "اسحب لإعادة الترتيب. يمكن عرض ما يصل إلى {{max}} مداخل في الشريط الجانبي. لا تحتوي عناصر المجموعات الفرعية على مفاتيح للشريط الجانبي/لوحة المعلومات، وتُستخدم فقط لإظهار شريط القوائم وتبديل المنصة الافتراضية.",
+    "tipWithSidebarShortcuts": "اسحب لإعادة الترتيب. يمكن عرض {{max}} عناصر كحد أقصى في الشريط الجانبي، بما في ذلك المنصات الفردية داخل المجموعات.",
     "addGroup": "إضافة مجموعة",
     "editGroup": "تحرير المجموعة",
     "deleteGroup": "حذف المجموعة",
@@ -947,6 +975,7 @@
       "restartAll": "إعادة تشغيل الكل",
       "stopAll": "إيقاف الكل",
       "start": "تشغيل",
+      "restart": "إعادة التشغيل",
       "stop": "إيقاف",
       "openFolder": "فتح المجلد",
       "edit": "تعديل",
@@ -1126,7 +1155,8 @@
         "savedForNextLaunch": "تم الحفظ. سيصبح ساريًا عند تشغيل Codex في المرة القادمة عبر Cockpit؛ وستبقى الجلسة الحالية دون تغيير.",
         "restartRollbackFailed": "فشل بدء المسار الجديد ولم نتمكن من إعادة تشغيل التكوين الأصلي: ",
         "restartRolledBack": "فشل بدء المسار الجديد. تم استعادة التكوين الأصلي وإعادة تشغيل Codex: {{error}}"
-      }
+      },
+      "copyTimeout": "المهلة الزمنية للنسخ"
     },
     "quota": {
       "unbound": "حساب غير مرتبط",
@@ -1171,7 +1201,8 @@
         "stopPrevious": "إيقاف المثيل السابق",
         "prepareCredentials": "تجهيز بيانات الدخول",
         "writeProfile": "كتابة ملف المثيل",
-        "startClient": "تشغيل عميل Codex"
+        "startClient": "تشغيل عميل Codex",
+        "checkProxyCountry": "فحص دولة الخروج"
       },
       "detail": {
         "checkingInstance": "جارٍ قراءة إعدادات المثيل...",
@@ -1185,6 +1216,7 @@
         "preparingCredentials": "جارٍ فحص الرموز وتحديث بيانات الدخول الكاملة عند الحاجة...",
         "profileReady": "تم تحديث auth.json / سلسلة المفاتيح للمثيل بأمان",
         "cliPrepared": "أمر تشغيل CLI جاهز",
+        "cliResumeStarted": "بدأ استئناف جلسة CLI في الخلفية",
         "startingClient": "جارٍ تشغيل عملية عميل Codex والتحقق منها..."
       }
     },
@@ -1343,6 +1375,9 @@
       "trayIconStyleDesc": "اختر أيقونة النظام أحادية اللون أو أيقونة التطبيق الأصلية الملونة",
       "trayIconStyleTemplate": "أيقونة أحادية اللون",
       "trayIconStyleColor": "أيقونة ملونة",
+      "menuBarLeftClick": "النقر بالزر الأيسر في شريط القوائم",
+      "menuBarLeftClickMenu": "فتح قائمة الحصص",
+      "menuBarLeftClickWindow": "فتح النافذة الرئيسية",
       "floatingCardStartup": "إظهار البطاقة العائمة عند التشغيل",
       "floatingCardStartupDesc": "عرض بطاقة الحساب العائمة تلقائياً بعد تشغيل التطبيق",
       "floatingCardAlwaysOnTop": "إبقاء البطاقة العائمة في الأعلى افتراضياً",
@@ -1352,6 +1387,9 @@
       "floatingCardShowNowAction": "إظهار البطاقة العائمة",
       "dataDir": "مجلد البيانات",
       "dataDirDesc": "موقع تخزين الحسابات وملفات التكوين.",
+      "dataDirPending": "بعد إعادة التشغيل، سيقرأ Cockpit Tools البيانات من {{path}}.",
+      "dataDirPendingDefault": "بعد إعادة التشغيل، سيستخدم Cockpit Tools المجلد الافتراضي.",
+      "dataDirEnvironment": "يستخدم التشغيل الحالي المجلد المحدد بواسطة COCKPIT_TOOLS_DATA_DIR.",
       "topRightAdVisible": "إظهار الترويج العلوي",
       "topRightAdVisibleDesc": "إخفاء موضع الترويج العلوي داخل التطبيق. لا تتأثر صفحة الرعاة.",
       "opencodeTitle": "تكامل OpenCode",
@@ -1420,6 +1458,10 @@
       "cursorPathReset": "إعادة تعيين الافتراضي",
       "codexLaunchOnSwitch": "تشغيل تطبيق Codex App تلقائيًا عند تبديل Codex",
       "codexLaunchOnSwitchDesc": "تشغيل أو إعادة تشغيل تطبيق Codex App تلقائيًا بعد تبديل الحساب",
+      "codexAutomaticSessionRepair": "إصلاح ظهور الجلسات تلقائيًا",
+      "codexAutomaticSessionRepairDesc": "اختر ما إذا كنت تريد إصلاح فهرس الجلسات والطوابع الزمنية لملفات السجل عند تشغيل Codex من Cockpit أو تبديل مزوّد الجلسة.",
+      "codexAutomaticSessionRepairIndexOnly": "الفهرس فقط",
+      "codexAutomaticSessionRepairQuick": "إصلاح سريع",
       "autoUpdate": "التحديث التلقائي في الخلفية",
       "autoUpdateDesc": "عند اكتشاف إصدار جديد، يتم التحديث بصمت في الخلفية ثم يُطلب إعادة التشغيل عند الجاهزية.",
       "autoUpdateOff": "إيقاف (تحديث يدوي)",
@@ -1556,6 +1598,8 @@
       "claudeSettingsTitle": "إعدادات Claude",
       "claudeAutoRefresh": "تحديث حصة Claude تلقائيًا",
       "claudeAutoRefreshDesc": "يحدّث ذاكرة الحصة المؤقتة لحسابات Claude تلقائيًا في الخلفية.",
+      "claudeShareCodeSessionsOnSwitch": "مزامنة جلسات Code عند تبديل الحساب",
+      "claudeShareCodeSessionsOnSwitchDesc": "مشاركة قائمة جلسات Code بين الحسابات المحلية عند تبديل ملف Claude Desktop الافتراضي على macOS.",
       "claudeAppPath": "هدف تشغيل Claude Desktop",
       "claudeAppPathDesc": "يمكن للملف الافتراضي استخدام هدف Microsoft Store؛ أما الملفات متعددة المثيلات فتحتاج Claude.exe الحقيقي.",
       "antigravityLaunchOnSwitch": "تشغيل Antigravity IDE عند التبديل",
@@ -1596,12 +1640,15 @@
       "webdavAllowedDomainsDesc": "مفصولة بفواصل؛ فارغ = بلا حد",
       "claudeQuotaDisplayRemaining": "حصة Claude كنسبة متبقية",
       "claudeQuotaDisplayRemainingDesc": "الافتراضي: % مستخدم. التفعيل = % متبقي. التبديل والتنبيهات حسب الاستخدام.",
+      "menuBarLeftClickDesc": "يفتح النقر بالزر الأيمن دائمًا قائمة الحصة.",
+      "menuBarLeftClickQuotaMenu": "قائمة الحصة",
+      "menuBarLeftClickMainWindow": "النافذة الرئيسية",
       "menuBarQuota": "عرض الحصة الحية في شريط القوائم",
       "menuBarQuotaDesc": "عند التفعيل، تُعرض الحصة المتبقية للحساب الحالي للمنصة المختارة بجانب أيقونة شريط القوائم. خيارات المنصة في مربع حوار.",
-      "menuBarQuotaEnabledDesc": "مفعّل · {{platform}} · المتبقي لحساب هذه المنصة الحالي (الأدنى بين الحصص)",
+      "menuBarQuotaEnabledDesc": "مفعّل · {{platform}} · الحصص المتاحة للحساب الحالي",
       "menuBarQuotaConfigure": "تهيئة",
       "menuBarQuotaModalTitle": "حصة شريط القوائم",
-      "menuBarQuotaModalDesc": "خيارات مخصصة لهذه الميزة فقط: تتبع الحساب الحالي. خدمة API لـ Codex: «API + نسبة متبقية من المجموعة»؛ حساب مفتاح API: «API + الرصيد المتبقي»؛ عادي: بادئة البريد + النسبة (الأدنى؛ أحمر/برتقالي/أخضر).",
+      "menuBarQuotaModalDesc": "يتبع الحساب الحالي للمنصة المحددة ويعرض فترات الحصة المتاحة. تحدد أقل حصة متبقية اللون. تعرض حسابات Codex API Service / API Key علامة API دائمًا.",
       "menuBarAntigravityMetric": "حصة شريط القائمة",
       "menuBarQuotaLowest": "أقل حصة",
       "menuBarQuotaPlatform": "منصة حساب الحصة",
@@ -1628,10 +1675,22 @@
         "quotaCompatDesc": "تعرض مثيلات خدمة API حصة متاحة للعميل وفحوصه المحلية فقط. لا يتغير الاستخدام الفعلي لدى المزوّد أو حدود الصور. يخص هذا المفتاح إعدادات OAuth مع واجهات API الخارجية الأخرى فقط.",
         "configFailed": "تعذرت قراءة الإعدادات أو حفظها: {{error}}",
         "nativePredictions": "توقعات الخطوة التالية الأصلية (Tab)",
-        "nativePredictionsDesc": "متوقف افتراضيًا. تستخدم الاقتراحات مزوّد API ونموذج المحادثة الحالية وتزيد استهلاك API. بعد تغيير الإعداد، أعد تشغيل مثيلات Codex المعنية وأبقِ Cockpit Tools قيد التشغيل."
+        "nativePredictionsDesc": "مفعّل افتراضيًا. تستخدم الاقتراحات مزوّد API ونموذج المحادثة الحالية وتزيد استهلاك API. بعد تغيير الإعداد، أعد تشغيل مثيلات Codex المعنية وأبقِ Cockpit Tools قيد التشغيل."
       },
       "timeDisplayMode": "عرض الوقت",
-      "timeDisplayModeDesc": "الوقت المعروض في بطاقات الحسابات وقوائمها. الافتراضي هو وقت تبديل الحساب"
+      "timeDisplayModeDesc": "الوقت المعروض في بطاقات الحسابات وقوائمها. الافتراضي هو وقت تبديل الحساب",
+      "menuBarQuotaLayout": "تخطيط الحصة",
+      "menuBarQuotaLayoutDesc": "يستخدم السطر الأفقي الواحد نصًا أكبر. يعرض السطران المدمجان الحصص المتبقية لكلتا الفترتين مع توفير مساحة في شريط القوائم. عند توفر فترة واحدة، يعود العرض إلى سطر أفقي واحد.",
+      "menuBarQuotaLayoutPreview": "معاينة التخطيط مع حصص توضيحية",
+      "menuBarQuotaLayoutHorizontal": "سطر أفقي واحد",
+      "menuBarQuotaLayoutStacked": "سطران مدمجان",
+      "t3codeTitle": "إعدادات T3 Code",
+      "t3codeAppPath": "مسار تشغيل T3 Code",
+      "t3codeAppPathDesc": "اتركه فارغاً لاستخدام المسار الافتراضي",
+      "t3codeAutoRefresh": "تحديث حصة T3 Code تلقائياً",
+      "t3codeAutoRefreshDesc": "الفاصل الزمني لتحديث الحصة في الخلفية",
+      "t3codeAppUiInjection": "كبسولة الحصة في شريط محادثة T3 Code",
+      "t3codeAppUiInjectionDesc": "عند تشغيل T3 Code من Cockpit، يظهر نوع النموذج المحدد والحصة المتبقية أسفل مربع الكتابة. انقر لعرض تفاصيل الحساب والاستخدام."
     },
     "network": {
       "apiTitle": "واجهة برمجة تطبيقات قمرة القيادة المضادة للجاذبية",
@@ -1979,6 +2038,13 @@
       "pathLabel": "مسار تشغيل {{app}}",
       "configurePath": "تعيين المسار",
       "configureHint": "اختر ملفًا تنفيذيًا أو اترك الحقل فارغًا للكشف التلقائي.",
+      "autoDetect": "اكتشاف تلقائي",
+      "noInstallation": "لم يتم العثور على {{app}}.",
+      "installationGuide": "دليل التثبيت الرسمي",
+      "copyInstallCommand": "نسخ أمر التثبيت",
+      "configured": "مُعدّ",
+      "detected": "اكتُشف تلقائيًا",
+      "checkFailed": "تعذّر التحقق من المسار",
       "cliHint": "تعذر العثور على {{app}}. اختر الملف التنفيذي أو ثبّت أداة سطر الأوامر ثم أعد الكشف.",
       "invalidPath": "لا يشير هذا المسار إلى ملف تنفيذي صالح لـ {{app}}.",
       "accountAlreadySwitched": "تم تبديل الحساب. ستتم إعادة محاولة تشغيل التطبيق فقط.",
@@ -2637,6 +2703,8 @@
       "crontabValidate": "تحقق",
       "crontabValidateHint": "سيتم التحقق من التعبير عند الحفظ",
       "crontabPreviewEmpty": "يرجى إدخال تعبير Crontab صالح",
+      "weeklyQuotaResetOnly": "التنبيه بعد إعادة تعيين الحصة الأسبوعية فقط",
+      "weeklyQuotaResetHint": "يتم تنبيه كل حساب محدد بعد إعادة تعيين حصته الأسبوعية.",
       "timeWindowEnabled": "تفعيل نافذة زمنية",
       "timeWindowHint": "عند التفعيل، يعمل إعادة تعيين الحصة داخل النافذة فقط؛ وخارجها تُستخدم الأوقات الثابتة.",
       "timeWindow": "نافذة إعادة تعيين الحصة",
@@ -2694,7 +2762,8 @@
     "stopApiServiceFailed": "تعذّر إيقاف خدمة API. عطّلها أولًا ثم أعد المحاولة.",
     "stopApiServiceFailedContinue": "لم تتوقف خدمة API بشكل صحيح. ستتم متابعة إعادة التشغيل...",
     "skipThisVersion": "تخطي هذا الإصدار",
-    "skipFailed": "تعذر تخطي هذا التحديث: {{error}}"
+    "skipFailed": "تعذر تخطي هذا التحديث: {{error}}",
+    "installFailedTranslocated": "يعمل التطبيق من موقع للقراءة فقط (macOS App Translocation)، لذا لا يمكن تثبيت التحديث. أغلق Cockpit Tools، وانقله إلى مجلد التطبيقات في Finder، ثم افتحه مجددًا وأعد محاولة التحديث."
   },
   "closeDialog": {
     "minimizeWindow": "تصغير",
@@ -2714,6 +2783,17 @@
     "other_group": "نماذج أخرى"
   },
   "codex": {
+    "subagentDefaults": {
+      "title": "الإعدادات الافتراضية للوكلاء الفرعيين",
+      "description": "تُطبّق على الوكلاء الفرعيين الجدد. تسود القيم المحددة عند الإطلاق. اترك الحقل فارغًا لاستخدام القيمة الافتراضية في Codex."
+    },
+    "modelInstructions": {
+      "title": "تعليمات النظام",
+      "description": "اختر ملف UTF-8 محليًا. يُحفظ التغيير فورًا ويُطبق على الجلسات الجديدة.",
+      "deferred": "يُطبق هذا الاختيار عند الانتقال من DeepSeek إلى مزود آخر.",
+      "selectFile": "اختيار ملف",
+      "useDefault": "استخدام الإعداد الافتراضي"
+    },
     "cli": {
       "launchSuccess": "تم تشغيل Codex CLI",
       "selectWorkingDir": "اختر مجلد عمل Codex CLI"
@@ -2721,56 +2801,19 @@
     "resetAutomation": {
       "nothingToReset": "لا توجد نافذة حصة تحتاج إلى إعادة تعيين الآن.",
       "unknownOutcome": "تعذّر تأكيد نتيجة إعادة التعيين. حاول مجددًا.",
-      "applyAllHint": "عند التفعيل، ينسخ الحفظ هذه القاعدة إلى جميع الحسابات ويستبدل الإعدادات المخصصة والمعطلة.",
-      "applyAll": "حفظ لكل الحسابات",
-      "accountHint": "تستخدم الحسابات دون إعدادات خاصة القاعدة المشتركة. ينطبق الحفظ على هذا الحساب فقط.",
-      "title": "استخدام بطاقات الإعادة تلقائيًا",
-      "accountTab": "هذا الحساب",
-      "publicTab": "القاعدة المشتركة",
-      "inherit": "اتباع القاعدة المشتركة",
-      "custom": "قاعدة مخصصة",
-      "off": "إيقاف",
-      "entryDefault": "إعداد تلقائي",
       "noCredits": "لا توجد بطاقات",
-      "publicHint": "القاعدة الافتراضية للحسابات دون إعدادات خاصة. تبقى الإعدادات المخصصة أو المعطلة كما هي.",
-      "before": "قبل الانتهاء",
-      "expiry": "الاستخدام قبل الانتهاء",
       "minutes": "دقائق",
       "hours": "ساعات",
       "days": "أيام",
-      "hostHint": "يعمل أثناء فتح Cockpit Tools. يحدد الخادم البطاقة المستخدمة. بعد استخدام بطاقة تلقائيًا، ينتظر الحساب 30 دقيقة قبل استخدامها تلقائيًا مرة أخرى.",
-      "invalidTime": "أدخل مدة موجبة قابلة للتعبير بثوانٍ صحيحة.",
-      "invalidPercent": "أدخل نسبة صحيحة من 0 إلى 100.",
-      "loadFailed": "تعذر تحميل القواعد: {{error}}",
-      "saveFailed": "تعذر حفظ القواعد: {{error}}",
-      "conflict": "تغيرت القاعدة في مكان آخر. أعد تحميلها.",
+      "conflict": "تغيّرت بيانات الحساب أثناء إعادة التعيين. يُرجى المحاولة مجدداً.",
       "busy": "تجري إعادة تعيين لهذا الحساب بالفعل.",
-      "storageError": "تعذرت قراءة قواعد الإعادة أو حفظها.",
+      "storageError": "تعذرت قراءة سجلات إعادة التعيين أو حفظها.",
       "timeout": "انتهت مهلة الطلب. سيُستخدم المعرّف المحفوظ مجددًا لمنع استهلاك بطاقة مرتين.",
-      "history": "النشاط الأخير",
-      "reasonExpiry": "قرب الانتهاء",
-      "reasonQuota": "انخفاض الحصة",
-      "reasonManual": "إعادة يدوية",
-      "reasonCheck": "فحص في الخلفية",
-      "pending": "بانتظار النتيجة",
-      "editPublic": "تعديل القاعدة المشتركة",
       "accountMissing": "لم يعد الحساب موجودًا.",
-      "masterLabel": "استخدام بطاقات إعادة التعيين تلقائيًا",
-      "ruleSource": "مصدر القاعدة",
-      "weeklyTrigger": "حد الحصة الأسبوعية",
-      "preferUsageCredits": "الأرصدة أولًا",
-      "weeklyRemaining": "المتبقي أسبوعيًا ≤",
-      "previewTitle": "معاينة شروط التشغيل",
-      "previewAny": "تُستخدم بطاقة واحدة عند تحقق أي شرط مفعّل:",
       "previewExpiry": "تنتهي صلاحية البطاقة خلال {{value}} {{unit}}",
       "previewWeekly": "الحصة الأسبوعية المتبقية لا تتجاوز {{percent}}٪",
       "previewWeeklyAfterCredits": "الحصة الأسبوعية المتبقية لا تتجاوز {{percent}}% وتأكد عدم توفر أرصدة الاستخدام",
-      "previewOff": "الاستخدام التلقائي متوقف. القواعد أدناه غير مفعّلة.",
-      "previewEmpty": "لا توجد شروط مفعّلة. لن تُستخدم البطاقات تلقائيًا.",
-      "cardOn": "تلقائي",
-      "cardOff": "متوقف",
-      "orSeparator": " أو ",
-      "inheritHint": "تتبع هذه الإعدادات القاعدة المشتركة. عدّلها أو اختر قاعدة مخصصة."
+      "orSeparator": " أو "
     },
     "overload": {
       "setting": "إعادة المحاولة عند الازدحام",
@@ -2880,7 +2923,10 @@
       "sessionRestoreFailed": "فشل إصلاح الجلسات ولم تكتمل استعادة النسخة الاحتياطية. توقف التشغيل؛ افحص السجلات والنسخ الاحتياطية قبل المحاولة مجددًا.",
       "bindingFailed": "تعذر تأكيد ربط الحساب. تم إيقاف التشغيل؛ حاول تبديل الحساب مجددًا.",
       "processScanFailed": "تعذر فحص العمليات السابقة في الخلفية. تم إيقاف التشغيل؛ حاول مجددًا.",
-      "proxyEntryFailed": "تعذر تشغيل الوكيل الذي تم إعداده. لم يُستخدم مسار بديل؛ حاول مجددًا."
+      "proxyEntryFailed": "تعذر تشغيل الوكيل الذي تم إعداده. لم يُستخدم مسار بديل؛ حاول مجددًا.",
+      "proxyEnvUnavailable": "تعذّر تطبيق إعدادات الوكيل. تحقّق من ملف .env لمثيل Codex هذا وأعد المحاولة.",
+      "proxyEnvChanged": "تغيّر ملف .env أثناء التشغيل. احفظ تعديلاتك وأعد المحاولة.",
+      "proxyEnvStopFailed": "تغيّر ملف .env أثناء التشغيل وتعذّر إيقاف Codex. أغلق المثيل وأعد المحاولة."
     },
     "oauthProxy": {
       "toggle": "تسجيل الدخول عبر وكيل",
@@ -2956,6 +3002,7 @@
         "operation": "الإجراء",
         "manage": "إدارة",
         "resetDefaults": "استعادة الافتراضي",
+        "embeddedFallback": "يستخدم Cockpit دليل النماذج المضمّن لعدم توفر الدليل المحدّث.",
         "inheritHint": "تحافظ النماذج الرسمية على حقول قدراتها، وتستخدم النماذج المخصصة قالب قدرات عام. يمكنك إضافة النماذج المرئية أو حذفها.",
         "validation": {
           "required": "احتفظ بنموذج واحد على الأقل.",
@@ -3002,6 +3049,20 @@
       "quota": {
         "hourly": "5 ساعات",
         "weekly": "أسبوعي"
+      },
+      "sessionResume": {
+        "title": "استئناف الجلسة",
+        "enabled": "إرسال مطالبة بالمتابعة عند بدء هذا المثيل",
+        "cliHint": "يرسل التشغيل في الطرفية المطالبة المهيأة. تظل المعاينة والنسخ والأوامر المخصصة تعمل كالمعتاد. عند إعداد التبديل لتشغيل هذا المثيل، تُرسل المطالبة في الخلفية.",
+        "target": "الجلسة المراد استئنافها",
+        "recentActivity": "آخر جلسة نشطة",
+        "lastCreated": "آخر جلسة تم إنشاؤها",
+        "previousDesktopSession": "الجلسة المعروضة قبل الإيقاف",
+        "specific": "جلسة محددة",
+        "threadId": "معرّف الجلسة",
+        "prompt": "مطالبة المتابعة",
+        "invalidId": "أدخل معرّف جلسة UUID صالحًا.",
+        "promptRequired": "أدخل مطالبة للمتابعة."
       },
       "syncAllRecords": {
         "action": "مزامنة كل سجلات المثيلات",
@@ -3156,7 +3217,8 @@
       "portInUseAction": "إغلاق المنفذ وإعادة المحاولة",
       "timeout": "انتهت مهلة المصادقة. انقر للمحاولة",
       "timeoutRetry": "تحديث رابط المصادقة",
-      "reauthEmailLabel": "حساب إعادة التفويض"
+      "reauthEmailLabel": "حساب إعادة التفويض",
+      "reauthEmailChangeHint": "إذا تغيّر بريد تسجيل الدخول، استخدم العنوان الجديد في المتصفح. يُحدّث Cockpit العنوان المحفوظ بعد التحقق من المستخدم ومساحة العمل نفسيهما."
     },
     "token": {
       "importPartial": "اكتمل الاستيراد. نجح: {{success}}، فشل: {{failed}}. {{errors}}",
@@ -3240,7 +3302,7 @@
         "save": "حفظ المجموعة",
         "freeNotice": "الحسابات المجانية غير مدعومة بعد. لا يمكن تحديد الحسابات المجانية.",
         "freeUnsupported": "الحسابات المجانية غير مدعومة بعد",
-        "restrictFreeToggle": "تقييد الحسابات المجانية",
+        "restrictFreeToggle": "إخفاء حسابات Free غير المنضمة",
         "sessionAffinityConfirmTitle": "تفعيل ثبات الجلسة؟",
         "sessionAffinityDescription": "عند التفعيل، تحاول المحادثة نفسها الاستمرار باستخدام الحساب نفسه. إذا تعذر استخدام الحساب، يمكن للتوجيه التبديل إلى حساب آخر، وبعد انتهاء المدة يُختار حساب من جديد.",
         "pendingOauthUnsupported": "معلّق: غير مسموح",
@@ -3677,7 +3739,7 @@
       "reset": "إعادة ضبط",
       "weeklyBlocksHourly": "الحصة الأسبوعية 0، لذا حصة 5 ساعات غير متاحة",
       "windowStats": "مستخدم {{tokens}} · {{cost}}",
-      "windowStatsHint": "الطلبات والرموز وفاتورة الحساب عبر خدمة API منذ امتلاء النافذة",
+      "windowStatsHint": "طلبات خدمة API والرموز وقيمة الاستخدام المقدّرة في نافذة الحصة هذه",
       "windowUsed": "مستخدم {{tokens}} · {{cost}}",
       "windowReq": "{{count}} طلب",
       "resetCredits": "مرات الضبط {{count}}",
@@ -3702,8 +3764,8 @@
       "resetCreditRecordsLoadFailed": "فشل تحميل سجلات إعادة الضبط: {{error}}",
       "resetCreditGrantedAt": "مُنحت",
       "resetCreditExpiresAt": "تنتهي",
-      "windowAccountCostHint": "فوترة الحساب (تقدير حسب أسعار النموذج)",
-      "windowEstimatedFullCostHint": "محتسبة من الاستخدام الحالي: تكلفة الحساب عند امتلاء هذه النافذة بالكامل",
+      "windowAccountCostHint": "قيمة استخدام مقدّرة وفق أسعار API للنموذج. تظهر حصة الاشتراك المتبقية وفق النسبة التي يعيدها الحساب.",
+      "windowEstimatedFullCostHint": "قيمة الاستخدام المقدّرة لكامل النافذة، محسوبة من نسبة الحصة المستخدمة",
       "windowUserCostHint": "فوترة المستخدم",
       "windowWeeks": "حصة {{count}} أسابيع",
       "windowDays": "حصة {{count}} أيام",
@@ -3967,7 +4029,7 @@
         "max": "الأقصى",
         "ultra": "فائق"
       },
-      "scheduleQuotaResetHint": "عند تفعيل الإيقاظ بعد إعادة تعيين الحصة، سيتم ضبط التحديث التلقائي ليعمل كل دقيقتين.",
+      "scheduleQuotaResetHint": "تعمل المهمة وفق آخر موعد مسجل لإعادة تعيين حصة الحساب. يبقى فاصل التحديث التلقائي لـ Codex كما هو.",
       "scheduleQuotaResetSummary": "التشغيل بعد إعادة تعيين الحصة",
       "quotaResetWindowLabel": "شرط تفعيل نافذة إعادة التعيين",
       "quotaResetWindowHint": "عادةً ما يشير primary_window إلى حصة 5 ساعات. لدى المستخدم المجاني قد يشير primary_window إلى الحصة الأسبوعية، وقد يختلف حسب الاشتراك.",
@@ -3980,7 +4042,6 @@
       },
       "nextRunsQuotaResetHint": "تعتمد عمليات التشغيل بعد إعادة تعيين الحصة على أحدث بيانات الحصة، لذا لا تتوفر معاينة بوقت ثابت.",
       "triggerQuotaReset": "تشغيل بعد إعادة تعيين الحصة",
-      "noticeSavedEnabledWithQuotaReset": "تم حفظ المهام. الإجمالي: {{count}}. تم ضبط التحديث التلقائي لـ Codex ليعمل كل {{minutes}} دقيقة.",
       "runtimeConfigTitle": "تخصيص مسارات بيئة التشغيل",
       "runtimeConfigHint": "يمكن إدخال مسار ملف تنفيذي أو مجلد. اتركه فارغًا لاكتشافه تلقائيًا من PATH.",
       "runtimeConfigCodexCliLabel": "مسار Codex CLI",
@@ -4169,7 +4230,7 @@
         "projectsSuccess": "اكتملت الاستعادة: {{projects}} مشاريع و{{assignments}} روابط؛ تم تجاوز {{skipped}} مشاريع و{{ambiguous}} محادثات ذات روابط غير واضحة.",
         "projectsPending": "توقفت استعادة سابقة. أغلق النسخة وشغّل الإصلاح الكامل لاستعادة عمليات الكتابة غير المكتملة.",
         "projectsDeferred": "تأجلت معالجة بعض البيانات. أغلق النسخة وأعد الإصلاح السريع أو استخدم الإصلاح الكامل.",
-        "switchProjectsDeferred": "تم تحديث بيانات الاعتماد، لكن تعذرت مزامنة حالة المشاريع المحلية. أغلق مثيل Codex المعني ثم شغّله من Cockpit لإعادة المحاولة."
+        "switchProjectsDeferred": "تم تحديث بيانات الاعتماد، لكن تعذرت مزامنة حالة المشاريع المحلية أو المحادثات. أغلق مثيل Codex المعني ثم شغّله من Cockpit لإعادة المحاولة."
       },
       "importModal": {
         "title": "استيراد الجلسات",
@@ -4269,6 +4330,36 @@
       }
     },
     "sessionUsage": {
+      "analysis": {
+        "localUsage": "استخدام الجلسات المحلية",
+        "selectedScope": "عوامل التصفية الحالية",
+        "project": "المشروع",
+        "allModels": "كل النماذج",
+        "allProjects": "كل المشاريع",
+        "unknownProject": "مشروع غير معروف",
+        "requests": "الطلبات",
+        "time": "الوقت",
+        "freshInput": "إدخال جديد",
+        "cached": "إصابات ذاكرة التخزين المؤقت",
+        "referenceCost": "التكلفة المقدّرة",
+        "cacheRate": "معدل الإصابة",
+        "viewSession": "عرض طلبات الجلسة",
+        "clearSession": "مسح تصفية الجلسة",
+        "sort": "فرز",
+        "indexingProjects": "جارٍ فهرسة المشاريع السابقة…",
+        "noResults": "لا سجلات مطابقة لعوامل التصفية",
+        "unpriced": "بعض الاستخدام بلا سعر للنموذج",
+        "costHelp": "تقدير حسب أسعار واجهة النموذج",
+        "page": "الصفحة {{page}}"
+      },
+      "comparison": {
+        "localTotal": "رموز الجلسات المحلية · الفترة والنسخ المحددة",
+        "profileTotal": "الملف الرسمي · إجمالي الرموز منذ البداية",
+        "account": "حساب Codex",
+        "noAccount": "أضف حساب Codex OAuth لعرض إجماليه الرسمي.",
+        "loadError": "تعذّر تحميل الإجمالي الرسمي.",
+        "unavailable": "لم يوفّر الملف الرسمي إجماليًا."
+      },
       "tab": "الاستخدام",
       "listTab": "الجلسات",
       "title": "استخدام الجلسات",
@@ -4359,7 +4450,7 @@
       "hideApiKey": "إخفاء API Key",
       "apiKeyHiddenHint": "تم إخفاء API Key. انقر للإظهار.",
       "modelCatalog": {
-        "restartHint": "تم تحديث قائمة النماذج. إذا كان Codex قيد التشغيل، فأعد تشغيله لتطبيق التغييرات.",
+        "launchHint": "شغّل Codex من Cockpit باستخدام هذا الحساب لتطبيق إعدادات النماذج المحفوظة.",
         "label": "قائمة النماذج",
         "fetch": "جلب من المزوّد",
         "fetching": "جارٍ الجلب...",
@@ -4367,7 +4458,7 @@
         "placeholder": "أدخل معرّف نموذج واحدًا في كل سطر، أو افصل المعرّفات بفواصل.",
         "editHint": "تُضاف النماذج المجلوبة إلى هذه المسودة فقط. راجعها وعدّلها قبل الحفظ.",
         "syncToggle": "مزامنة نماذج المزوّد مع Codex",
-        "syncDescription": "بعد الحفظ، تُستخدم هذه القائمة لإنشاء دليل نماذج Codex المُدار بواسطة Cockpit. لن تُستبدل الأدلة المخصصة.",
+        "syncDescription": "تُطبَّق هذه القائمة عند تشغيل Codex من Cockpit باستخدام هذا الحساب. تُعطى الأولوية لدليل النماذج المخصص إن وُجد.",
         "fetchCredentialsRequired": "أدخل API Key وBase URL أولًا.",
         "fetchEmpty": "لم يُرجع المزوّد أي نماذج. تم الاحتفاظ بالقائمة الحالية.",
         "fetchFailed": "تعذر جلب نماذج المزوّد: {{error}}",
@@ -4806,7 +4897,8 @@
           "totalGranted": "الممنوح",
           "totalAvailable": "المتاح",
           "isAvailable": "الرصيد متاح",
-          "modelLimitsEnabled": "قيود النماذج"
+          "modelLimitsEnabled": "قيود النماذج",
+          "weeklyShort": "أسبوعي"
         },
         "accountBalance": "رصيد الحساب",
         "unlimitedQuota": "غير محدود",
@@ -4894,6 +4986,8 @@
       "daysLeft": "{{count}}ي",
       "over99Days": "99+ي",
       "titleWithDate": "ينتهي الاشتراك: {{date}}",
+      "expiryUnconfirmed": "غير مؤكّد",
+      "titleWithUnconfirmedDate": "تعذّر تأكيد انتهاء الاشتراك. آخر موعد مسجّل: {{date}}",
       "titleUnknown": "أعد التفويض لجلب انتهاء الاشتراك",
       "filterLabel": "تصفية الانتهاء",
       "filterAll": "كلها ({{count}})",
@@ -4916,7 +5010,8 @@
         "refreshTokens": "تحديث بيانات الدخول",
         "writeCredentials": "كتابة بيانات العميل",
         "syncSettings": "مزامنة إعدادات الحساب",
-        "startClient": "تشغيل عميل Codex"
+        "startClient": "تشغيل عميل Codex",
+        "checkProxyCountry": "فحص دولة الخروج"
       },
       "status": {
         "pending": "انتظار",
@@ -4970,6 +5065,7 @@
       "repairFailedWithError": "فشل إصلاح الظهور: {{error}}"
     },
     "accountNote": {
+      "refreshEmailHint": "إذا تغيّر البريد الإلكتروني لحساب OpenAI، فأعد تفويض الحساب ومساحة العمل نفسيهما لتحديثه هنا.",
       "title": "ملاحظة الحساب",
       "label": "ملاحظة الحساب",
       "desc": "أضف كلمة مرور و2FA ورابط البريد والهاتف وملاحظات أخرى لـ {{account}}.",
@@ -5084,7 +5180,7 @@
         "responsesTitle": "مدخل Responses",
         "responsesNote": "مدخل Responses الأصلي لـ Codex.",
         "anthropicTitle": "رسائل Anthropic",
-        "claudeCodeNoModels": "لا تتوفر نماذج إعداد Claude Code المسبق لهذا المفتاح. احفظ الأسماء المستعارة أولاً في قواعد النماذج.",
+        "claudeCodeNoModels": "لا توجد نماذج محادثة متاحة لهذا المفتاح. تحقّق من قواعد النماذج ومجموعة الحسابات الخاصة به.",
         "claudeCodeSettingsChanged": "تغيّرت الإعدادات بعد المعاينة. أعد المعاينة.",
         "claudeCodeServiceUnavailable": "تعذّر تحميل نماذج هذا المفتاح. تحقّق من خدمة API وحالة المفتاح.",
         "claudeCodeNoBackup": "لا توجد نسخة احتياطية تطابق الإعدادات الحالية.",
@@ -5121,6 +5217,11 @@
         "saveRules": "حفظ القواعد",
         "rulesSaved": "تم حفظ قواعد النماذج",
         "pricingAction": "التسعير",
+        "refreshCatalog": "تحديث النماذج",
+        "refreshComplete": "تم التحقق من النماذج والأسعار.",
+        "refreshFailed": "تعذر تحديث النماذج والأسعار. يستمر استخدام البيانات الحالية.",
+        "refreshModelsFailed": "تعذر تحديث النماذج. يستمر استخدام القائمة الحالية.",
+        "refreshPricesFailed": "تعذر تحديث الأسعار. يستمر استخدام الأسعار الحالية.",
         "pricingTitle": "تسعير النماذج",
         "pricingDesc": "بالدولار لكل مليون توكن، للإحصاءات المحلية فقط.",
         "pricingModel": "النموذج",
@@ -5157,6 +5258,16 @@
         "pricingRepriceCompleted": "تم تحديث التقديرات التاريخية",
         "pricingRepriceSaveBlocked": "إعادة الحساب جارية؛ احفظ بعد الانتهاء"
       },
+      "accountPools": {
+        "title": "مجموعات الحسابات المسماة",
+        "add": "إضافة مجموعة حسابات",
+        "name": "اسم المجموعة",
+        "deleteHint": "تحتفظ المفاتيح المرتبطة بنطاق حساباتها الحالي بعد حذف المجموعة.",
+        "detach": "إلغاء ربط المجموعة",
+        "saved": "تم حفظ مجموعة الحسابات",
+        "removed": "تم حذف مجموعة الحسابات",
+        "detached": "تم إلغاء ربط المفتاح بالمجموعة"
+      },
       "keys": {
         "policyTitle": "سياسة النماذج",
         "advancedPolicyTitle": "ميزة متقدمة: سياسة النماذج",
@@ -5179,6 +5290,13 @@
         "tokenLimit": "الحد الإجمالي للرموز",
         "tokenLimitPlaceholder": "مثال: 10m",
         "tokenLimitHint": "اتركه فارغًا لعدم وجود حد. يتم جمع رموز الإدخال والإخراج عبر جميع النماذج.",
+        "monthlyTokens": {
+          "title": "تذكير شهري لاستخدام الرموز",
+          "used": "هذا الشهر: {{used}} رمزًا",
+          "hint": "اترك الحقل فارغًا للتعطيل. يظهر تذكير واحد كل شهر تقويمي محلي وتستمر الطلبات.",
+          "invalid": "أدخل عددًا صحيحًا من الرموز.",
+          "notification": "استخدم المفتاح {{label}} عدد {{used}} من الرموز هذا الشهر وبلغ حد التذكير البالغ {{threshold}}."
+        },
         "tokenLimitInvalid": "أدخل حدًا صالحًا للرموز، مثل 10m أو 10000000",
         "tokenLimitUsage": "حد الرموز",
         "tokenLimitCurrentUsage": "المستخدم: {{used}} رمز",
@@ -5216,6 +5334,10 @@
         "maxRetryInterval": "انتظار retry",
         "disableCooling": "تعطيل cooldown",
         "saveOptions": "حفظ الخيارات",
+        "accountQuotaFloor": "الحد الأدنى للحصة المتبقية",
+        "accountQuotaFloorHint": "يوقف الحساب استقبال الطلبات الجديدة عندما تصل الحصة المتبقية في أي فترة إلى هذا الحد. اترك الحقل فارغًا للتعطيل.",
+        "accountQuotaFloorInvalid": "أدخل نسبة مئوية صحيحة من 1 إلى 100.",
+        "accountQuotaFloorSaveFailed": "تعذر حفظ الحد الأدنى للحصة.",
         "immediateSseResponse": "SSE فوري 200",
         "maxConcurrentImageRequests": "طلبات الصور لكل حساب",
         "maxAccountConcurrency": "تزامن الحساب",
@@ -5284,6 +5406,12 @@
         "tokenOutput": "الإخراج",
         "tokenCache": "التخزين المؤقت",
         "tokenTotal": "الإجمالي",
+        "inputTextCharacters": "عدد أحرف الإدخال",
+        "inputTextCharactersHint": "عدد رموز Unicode في نص الرسائل والتعليمات المرسل مع هذا الطلب، بما في ذلك سجل النص الذي أرسله العميل.",
+        "highTokenRequests": "الطلبات ذات الاستهلاك المرتفع",
+        "highTokenBadge": "استهلاك مرتفع",
+        "tokenThreshold": "حد الرموز للتحديد",
+        "highTokenHint": "الطلبات المسجلة التي تستخدم {{threshold}} رمزًا على الأقل",
         "speedAdjusted": "{{tier}} ← قياسي",
         "officialDefaultSpeed": "لا يدعم مسار الاشتراك الرسمي تجاوز السرعة. أُرسلت هذه المحاولة بالسرعة الافتراضية.",
         "sentTier": "الإرسال: {{tier}}",
@@ -5358,7 +5486,13 @@
       "usage": {
         "title": "إحصاءات الاستخدام",
         "lastRecorded": "آخر تسجيل",
-        "trendEmpty": "لا توجد طلبات في النطاق المحدد"
+        "inputTextCoverage": "تم قياس {{measured}} من أصل {{total}} طلبًا",
+        "trendEmpty": "لا توجد طلبات في النطاق المحدد",
+        "periodTokens": "رموز الفترة",
+        "cumulativeTokens": "الرموز التراكمية",
+        "tokenComposition": "توزيع استخدام الرموز",
+        "nonReasoningOutput": "مخرجات دون استدلال",
+        "reasoningTokens": "الاستدلال"
       },
       "accountModelMappings": {
         "action": "خريطة النماذج",
@@ -5861,7 +5995,7 @@
         "viewAll": "عرض الكل"
       },
       "previewTitle": "معاينة الوكيل",
-      "modeDisabled": "بلا وكيل",
+      "modeDisabled": "فرض الاتصال المباشر",
       "disableAction": "إلغاء الوكيل",
       "setIndependent": "وكيل خاص",
       "disabledHint": "تجاوز الوكيل الخاص والمشترك ومحاولة الاتصال المباشر للاتصالات الجديدة.",
@@ -5907,7 +6041,7 @@
       "restoreEntryNotRunning": "لم يُعثر على تطبيق سطح مكتب يعمل ويستخدم مدخل وكيل مسجل تابع لنسخة Cockpit هذه.",
       "restoreEntryBusy": "استعادة الوكيل جارية بالفعل. أعد المحاولة بعد قليل.",
       "restoreEntryTimeout": "انتهت مهلة استعادة الوكيل. أعد المحاولة.",
-      "restartHint": "ينتقل العملاء الذين بدأوا عبر المُرحّل المحلي عند إنشاء اتصال جديد. يحتاج العملاء الآخرون إلى إعادة تشغيل مرة واحدة. يستمع جسر سطح المكتب على واجهة الاسترجاع المحلية فقط، لكنه لا يعزل المستخدمين المحليين الآخرين. لا تتغير إعدادات وكيل النظام.",
+      "restartHint": "أعد تشغيل Codex بعد الربط أو تغيير وضع الوكيل أو إلغاء الربط لتستخدم الواجهة والخلفية الإعدادات نفسها. عند فشل الوكيل لن يتم الرجوع إلى اتصال مباشر.",
       "exportHint": "لا تتضمن صادرات الحساب بيانات اعتماد الوكيل؛ أعد إعدادها بعد الاستيراد.",
       "backToAccounts": "العودة إلى الحسابات",
       "accountsTitle": "الحسابات",
@@ -6299,7 +6433,76 @@
       "noCurrentNode": "العقدة الحالية غير متاحة بعد",
       "runtimeBusy": "الوكيل المحلي مشغول. التحديث غير متاح مؤقتًا.",
       "runtimeCapacity": "هناك عدد كبير من الوكلاء قيد التشغيل. أوقف الوكلاء غير المستخدمة وأعد المحاولة.",
-      "runtimeReadFailed": "حالة الوكيل المحلي غير متاحة مؤقتًا. أعد المحاولة."
+      "runtimeReadFailed": "حالة الوكيل المحلي غير متاحة مؤقتًا. أعد المحاولة.",
+      "modeClient": "استخدام إعدادات العميل",
+      "clientHint": "الاحتفاظ بإعدادات .env ووكيل النظام الأصلية لهذا الحساب، دون تطبيق وكيل الحساب أو الوكيل المشترك من Cockpit.",
+      "launch": {
+        "envChanged": "تغيرت إعدادات الوكيل خارج هذه العملية. تم الاحتفاظ بالملف؛ راجع إعدادات الوكيل في .env قبل إعادة المحاولة.",
+        "envStorage": "تعذرت قراءة إعدادات الوكيل أو حفظها بأمان. تم الاحتفاظ بالملف الأصلي؛ تحقق من أذونات المجلد.",
+        "envUnsupported": "تعذرت إدارة تنسيق .env بأمان ولم تتم الكتابة فوقه. تحقق من علامات الاقتباس غير المغلقة أو استمرار الأسطر.",
+        "stopFailed": "تعذر إيقاف نسخة Codex ذات الإعدادات غير المتطابقة. أغلقها قبل إعادة المحاولة."
+      },
+      "country": {
+        "title": "فحص بلد الخروج قبل التشغيل",
+        "hint": "اختياري لكل الحسابات، مع ربط وكيل أو بدونه. يفحص مخرج HTTP عبر ChatGPT Cloudflare trace عند التشغيل من داخل Cockpit. لا يغيّر اختصارات سطح المكتب.",
+        "expected": "البلد أو المنطقة المتوقعة",
+        "choose": "اختر بلدًا أو منطقة",
+        "save": "حفظ فحص البلد",
+        "saved": "تم حفظ إعدادات فحص البلد",
+        "mismatch": "بلد الخروج غير مطابق: المتوقع {{expected}}، والمكتشف {{actual}}. لم يتم تشغيل Codex.",
+        "unavailable": "تعذر تأكيد بلد الخروج. لم يتم تشغيل Codex؛ تحقق من الاتصال ثم أعد المحاولة.",
+        "routeUnknown": "تعذر تحديد مسار وكيل العميل. لم يتم تشغيل Codex؛ راجع إعدادات الوكيل وملف .env.",
+        "changed": "تغيرت إعدادات البلد أثناء الفحص. أعد المحاولة للتحقق من الإعدادات الحالية.",
+        "storage": "تعذرت قراءة إعدادات فحص البلد أو حفظها.",
+        "invalid": "اختر بلدًا أو منطقة صالحة.",
+        "search": "البحث باسم الدولة أو رمزها",
+        "actual": "الدولة أو المنطقة المرصودة",
+        "route": "الإعدادات التي تم فحصها",
+        "checkedAt": "وقت الفحص",
+        "notDetected": "لم تُكتشف",
+        "notRequired": "غير مفعّل",
+        "resultTitle": "نتيجة فحص دولة الخروج",
+        "evidenceHint": "يُفحص مسار HTTP المحفوظ للتشغيل فقط. السجلات هنا تخص جلسة Cockpit الحالية، ويحفظ سجل التطبيق النتائج. النتيجة السابقة لا تؤكد الاتصال الحالي.",
+        "saveFirst": "احفظ وضع الوكيل والدولة قبل الفحص.",
+        "noChecks": "لا توجد فحوصات في هذه الجلسة.",
+        "checkNow": "افحص الآن",
+        "history": "الفحوصات السابقة في هذه الجلسة",
+        "historyFailed": "تعذرت قراءة الفحوصات الأخيرة.",
+        "result_checking": "جارٍ فحص دولة الخروج…",
+        "result_passed": "نجح الفحص",
+        "result_blocked": "فشل الفحص",
+        "result_stale": "تغيرت الإعدادات؛ أعد الفحص",
+        "route_account": "وكيل حساب Cockpit",
+        "route_direct": "اتصال مباشر إجباري",
+        "route_env": "ملف .env الخاص بالعميل",
+        "route_environment": "البيئة الموروثة",
+        "route_system": "وكيل Windows",
+        "route_network": "مسار الشبكة الافتراضي",
+        "route_unknown": "لم يُحدد بعد",
+        "progressCountries": "المتوقعة: {{expected}} · المرصودة: {{actual}}",
+        "progressTime": "المدة: {{ms}} مللي ثانية"
+      },
+      "env": {
+        "title": "متغيرات وكيل العميل",
+        "source": "المصدر المكتشف: {{source}}",
+        "source_saved": "إعدادات محفوظة لهذا الحساب",
+        "source_env": "ملف .env للعميل",
+        "source_environment": "متغيرات البيئة الموروثة",
+        "source_system": "وكيل نظام Windows",
+        "source_none": "لم يُكتشف وكيل صريح",
+        "source_unknown": "تعذر التعرف",
+        "hint": "تُقبل فقط HTTP_PROXY وHTTPS_PROXY وALL_PROXY وNO_PROXY. تُطبق عند التشغيل التالي من Cockpit بإعدادات العميل، مع الحفاظ على بقية إدخالات .env.",
+        "variables": "متغيرات الوكيل",
+        "recognize": "إعادة القراءة",
+        "save": "حفظ إعدادات ENV",
+        "saved": "حُفظت للتشغيل التالي",
+        "unrecognized": "تعذرت قراءة متغيرات الوكيل الحالية بأمان. يمكنك إدخال قيم ثابتة هنا؛ لن يتغير ملف العميل الآن.",
+        "noneHint": "لم يُعثر على وكيل صريح. قد تظل واجهة TUN أو طبقة شبكة أخرى نشطة.",
+        "readFailed": "تعذرت قراءة إعدادات ENV. أعد المحاولة قبل التعديل.",
+        "saveFailed": "تعذر حفظ إعدادات ENV.",
+        "changed": "تغيرت الإعدادات في موضع آخر. أعد قراءتها قبل الحفظ.",
+        "invalid": "أدخل قيماً ثابتة فقط لـ HTTP_PROXY وHTTPS_PROXY وALL_PROXY وNO_PROXY دون أسماء مكررة. البروتوكولات المدعومة: http وhttps وsocks5 وsocks5h."
+      }
     },
     "more": {
       "title": "المزيد",
@@ -6328,6 +6531,13 @@
       "restart": "إعادة تشغيل CLI",
       "restarting": "جارٍ إعادة التشغيل…",
       "restarted": "أُعيد تشغيل خدمة CLI.",
+      "autoRefresh": "تحديث CLI تلقائيًا بعد تبديل الحساب",
+      "autoRefreshHint": "يحدّث خدمة CLI الافتراضية عندما تكون خاملة ومن دون عملاء متصلين.",
+      "autoDeferred": "تعذّر تأكيد التحديث التلقائي لـ CLI. تحقّق من حالة الخدمة قبل إعادة تشغيلها.",
+      "workspaceConfirmed": "أُعيد تشغيل خدمة CLI وتم التحقق من مساحة عمل OAuth المحددة.",
+      "workspaceUnconfirmed": "أُعيد تشغيل خدمة CLI. تعذّر التحقق من مساحة عمل OAuth المحددة.",
+      "workspaceMismatch": "تستخدم خدمة CLI بعد إعادة تشغيلها حساب OAuth أو مساحة عمل مختلفة.",
+      "restartUnconfirmed": "تعذّر التحقق من خدمة CLI الجديدة. أعد المحاولة أو انسخ الأمر إلى الطرفية.",
       "restartFailed": "تعذّرت إعادة التشغيل. حاول مجددًا أو انسخ الأمر إلى الطرفية.",
       "title": "تحديث حساب CLI",
       "description": "تم حفظ بيانات الاعتماد، لكن خدمة Codex CLI لهذا الملف الشخصي لا تزال تعمل وقد تواصل استخدام الحساب السابق.",
@@ -6366,6 +6576,8 @@
       "instructionsBytes": "التعليمات",
       "overloadRetry": "إعادات الحمل الزائد",
       "overloadRecovery": "وقت الاستعادة",
+      "historyRejectionTitle": "عدم تطابق شكل السجل",
+      "historyRejectionHint": "رفض الخادم شكل سجل الطلبات. تُسجَّل الأعداد والعلامات فقط؛ ولا يُحفظ نص المحادثة.",
       "recordPayloads": "تسجيل أجسام الطلبات",
       "recordPayloadsHint": "معطل افتراضياً. تُحفظ محلياً نسخ محدودة الحجم من طلبات العميل والخادم. إيقافه يمنع التسجيل الجديد، ويمكن حذف الأجسام المحفوظة بشكل منفصل.",
       "privacyHint": "تُحجب حقول المصادقة، لكن قد تبقى أسرار داخل نص المحادثة. راجعها قبل النسخ أو المشاركة.",
@@ -6550,6 +6762,12 @@
       "saveOnly": "حفظ فقط",
       "validationBusy": "لا يزال فحص المسار السابق جاريًا. أعد المحاولة بعد قليل."
     },
+    "customProviderUsage": {
+      "title": "استعلام مخصص عن الحصة",
+      "settings": "إعدادات الاستعلام (JSON)",
+      "hint": "اتركه فارغًا للاكتشاف التلقائي. استخدم headers لإضافة ترويسات الطلب. افصل مسارات الحقول البديلة بالرمز | لاستخدام أول قيمة غير فارغة.",
+      "invalid": "تحقق من إعدادات JSON ومن أن نقطة النهاية في نفس المصدر، ثم راجع تعيين الحقول."
+    },
     "openaiUsage": {
       "monthCost": "إنفاق الشهر",
       "scope": "إنفاق المؤسسة؛ الطلبات والرموز لواجهات النص فقط. الإحصاءات بتوقيت UTC.",
@@ -6595,7 +6813,7 @@
       "official": "السجل الرسمي",
       "local": "الاستخدام المحلي",
       "officialHint": "السجلات الرسمية لآخر 30 يومًا.",
-      "localHint": "يسجل من الآن الإجراءات اليدوية والتلقائية عبر هذا التطبيق دون استعادة البيانات القديمة.",
+      "localHint": "يسجل الإجراءات اليدوية عبر هذا التطبيق ويحتفظ بالسجلات التلقائية السابقة دون استعادة البيانات القديمة.",
       "officialEmpty": "لا توجد عمليات إعادة ضبط خلال آخر 30 يومًا",
       "localEmpty": "لا توجد سجلات استخدام محلية",
       "received": "تم استلام إعادة ضبط",
@@ -6612,7 +6830,13 @@
       "requestId": "معرّف الطلب",
       "more": "عرض المزيد",
       "loadFailed": "تعذر تحميل السجل",
-      "officialUnavailable": "السجل الرسمي لإعادة الضبط غير متاح لهذا الحساب"
+      "officialUnavailable": "السجل الرسمي لإعادة الضبط غير متاح لهذا الحساب",
+      "legacyActivityTitle": "سجل النشاط السابق (للقراءة فقط)",
+      "legacyActivityHint": "يُعرض بحسب معرّف الحساب المحفوظ فقط، ولا يستنتج هوية مساحة العمل أو نتيجة خصم البطاقة.",
+      "legacyReasonExpiry": "قرب الانتهاء",
+      "legacyReasonQuota": "انخفاض الحصة",
+      "legacyReasonManual": "إعادة يدوية",
+      "legacyReasonCheck": "فحص في الخلفية"
     }
   },
   "githubCopilot": {
@@ -6920,6 +7144,10 @@
     "traeSoloCn": {
       "appPath": "مسار TraeWork CN",
       "title": "إعدادات TraeWork CN"
+    },
+    "t3code": {
+      "title": "إعدادات T3 Code",
+      "appPath": "مسار تشغيل T3 Code"
     }
   },
   "quotaAlert": {
@@ -7496,7 +7724,16 @@
         "dir": "المجلد"
       },
       "unknownTime": "الوقت غير معروف",
-      "searchPlaceholder": "ابحث بالعنوان أو مجلد العمل"
+      "searchPlaceholder": "ابحث بالعنوان أو مجلد العمل",
+      "rebind": {
+        "title": "تغيير مجلد مساحة العمل",
+        "scope": "أعد ربط كل الجلسات المحلية في هذا المجلد ضمن مثيل WorkBuddy المحدد. أغلق المثيل قبل التطبيق.",
+        "instance": "مثيل WorkBuddy",
+        "choose": "اختيار مجلد جديد",
+        "apply": "إعادة ربط الجلسات",
+        "noSessions": "لا توجد جلسات محلية متبقية في هذا المجلد. حدّث القائمة وأعد المحاولة.",
+        "success": "الجلسات المحلية التي أُعيد ربطها ({{count}})"
+      }
     },
     "title": "إدارة حسابات CodeBuddy",
     "noAccounts": "لا توجد حسابات CodeBuddy",
@@ -7737,7 +7974,7 @@
     }
   },
   "codebuddyCli": {
-    "launchTitle": "تشغيل CodeBuddy CN",
+    "launchTitle": "تشغيل {{app}}",
     "launchDesktop": "تشغيل تطبيق سطح المكتب",
     "recheck": "إعادة الفحص",
     "checking": "جارٍ البحث عن CodeBuddy CLI…",
@@ -7817,6 +8054,10 @@
     }
   },
   "workbuddy": {
+    "errors": {
+      "nodeAppPath": "يشير هذا المسار إلى بيئة تشغيل Node ‏({{path}}). اختر WorkBuddy.exe.",
+      "keyProcessFailed": "تعذّرت قراءة مفتاح WorkBuddy الرسمي. بقيت بيانات تسجيل الدخول كما هي. تحقّق من مسار التطبيق ({{path}}) في الإعدادات، ثم تحقّق من وجود تحديثات."
+    },
     "desktopEdition": "WorkBuddy (إصدار الصين)",
     "credits": {
       "planBase": "رصيد الباقة الأساسي",
@@ -7845,7 +8086,11 @@
       "creditUsed": "الرصيد المستخدم",
       "model": "النموذج",
       "recentUsage": "أحدث 5 سجلات",
-      "viewMore": "عرض المزيد"
+      "viewMore": "عرض المزيد",
+      "expiringHintTitle": "عرض تفاصيل الأرصدة المنتهية قريبًا",
+      "expiringSoon": "{{amount}} خلال 24 ساعة",
+      "expiringSoonTitle": "أرصدة تنتهي خلال 24 ساعة",
+      "expiringSoonSummary": "الإجمالي {{amount}} · {{packageCount}} حزمة"
     },
     "title": "إدارة حسابات WorkBuddy",
     "noAccounts": "لا توجد حسابات WorkBuddy",
@@ -7993,6 +8238,10 @@
       "timeRangeError": "لا يمكن أن يكون وقت البدء متأخرًا عن وقت الانتهاء"
     },
     "modelProbe": {
+      "results": "نتائج الاختبار",
+      "reply": "رد النموذج",
+      "backToSetup": "العودة إلى الإعداد",
+      "catalogUnavailable": "تعذر تحميل النماذج.",
       "scopeAll": "الكل ({{count}})",
       "scopeSelected": "المحدد ({{count}})",
       "scopeCurrent": "الحساب الحالي",
@@ -8020,9 +8269,13 @@
       "open": "اختبار النماذج"
     },
     "probeNotice": {
+      "recovered": "عاد {{model}} للعمل في {{time}}",
       "until": "كان {{model}} مقيّدًا في آخر اختبار، إعادة التعيين {{time}}",
       "unavailable": "كان {{model}} مقيّدًا في آخر اختبار",
       "failed": "فشل آخر اختبار لـ {{model}}"
+    },
+    "exposeToCodex": {
+      "title": "يتصل عبر بوابة Native Rust دون نسخ رمز WorkBuddy"
     }
   },
   "minimaxCode": {
@@ -8234,6 +8487,12 @@
     },
     "instances": {
       "unsupported": "تعدد نسخ ZCode متاح فقط على macOS وWindows وLinux."
+    },
+    "exposeToCodex": {
+      "startPlan": "حدّث حصة ZCode للتحقق من تفعيل خطة Z.ai Start Plan الشخصية.",
+      "projectKey": "اربط حساب BigModel API Key باستخدام مفتاح المشروع.",
+      "signIn": "سجّل الدخول إلى ZCode مجددًا ثم أعد المحاولة.",
+      "title": "يتصل عبر بوابة Native Rust دون نسخ مفتاح API أو رمز OAuth الخاص بـ ZCode إلى إعدادات Codex"
     }
   },
   "zed": {
@@ -8609,7 +8868,10 @@
       "deploySuccess": "تم النشر إلى Codex: {{count}} طراز",
       "deployFailed": "فشل النشر: {{error}}",
       "useKey": "استخدام المفتاح",
-      "deleteConfirm": "هل تريد حذف المفتاح المحفوظ \"{{name}}\"؟ لا يمكن التراجع عن هذا الإجراء."
+      "deleteConfirm": "هل تريد حذف المفتاح المحفوظ \"{{name}}\"؟ لا يمكن التراجع عن هذا الإجراء.",
+      "addToGeminiCli": "إضافة إلى Gemini CLI",
+      "geminiCliAdded": "تمت إضافة Gemini CLI",
+      "addToGeminiCliFailed": "فشل الإضافة إلى Gemini CLI: {{error}}"
     },
     "prefill": {
       "codexReady": "تم ملء إعدادات APIKEY.FUN. راجعها قبل إضافتها إلى Codex.",
@@ -8631,7 +8893,7 @@
       "title": "استخدام مفتاح API",
       "family": "المجموعة",
       "platform": "النظام الحالي",
-      "unsupportedGroup": "لا تتوفر عملاء بنقرة واحدة لهذه المجموعة بعد."
+      "unsupportedGroup": "لا يتوفر في Cockpit Tools حاليًا قالب إعداد للعميل يدعم واجهة APIKEY.FUN ‏{{family}}. يمكنك الإعداد يدويًا في عميل يدعم هذه الواجهة."
     },
     "campaign": {
       "badge": "١١.١١",
@@ -9355,5 +9617,315 @@
     "errorModel": "أدخل اسم نموذج كاملًا وفريدًا دون أحرف بدل.",
     "errorSave": "تعذر تحميل الإعدادات أو حفظها. أعد المحاولة.",
     "saved": "تم الحفظ. تُطبّق الإعدادات على الطلبات الجديدة."
+  },
+  "antigravityTokenUsage": {
+    "tab": "استهلاك الجلسات",
+    "subtitle": "استهلاك الرموز المحلي من جلسات Antigravity",
+    "title": "استهلاك رموز جلسات Antigravity",
+    "desc": "يجمّع الاستهلاك الفعلي للرموز من قواعد بيانات جلسات Antigravity المحلية (~/.gemini/antigravity) في وضع القراءة فقط، مع فصل صارم بين Thinking وOutput.",
+    "hint": "فحص للقراءة فقط لبيانات SQLite steps/gen_metadata (مع دعم WAL) وذاكرة RPC المؤقتة وسجلات JSONL. يستبعد Output رموز التفكير لمنع الازدواجية؛ وتبقى الرموز التقديرية منفصلة عن الإجمالي الدقيق.",
+    "summary": {
+      "badge": "رموز محلية",
+      "input": "الإدخال",
+      "thinking": "التفكير",
+      "output": "الإخراج",
+      "cache": "التخزين المؤقت",
+      "total": "الإجمالي",
+      "turns": "الأدوار",
+      "sessionsUnit": "جلسات",
+      "scanning": "جارٍ الفحص…",
+      "updating": "جارٍ التحديث…",
+      "detail": "التفاصيل"
+    },
+    "range": {
+      "label": "النطاق الزمني",
+      "today": "اليوم",
+      "7d": "آخر 7 أيام",
+      "30d": "آخر 30 يومًا",
+      "month": "هذا الشهر",
+      "all": "كل الأوقات"
+    },
+    "granularity": {
+      "label": "التفصيل الزمني",
+      "day": "يومي",
+      "week": "أسبوعي",
+      "month": "شهري"
+    },
+    "kinds": {
+      "all": "جميع الأنواع",
+      "main": "رئيسية",
+      "swarm": "سرب (Swarm)",
+      "subagent": "وكيل فرعي"
+    },
+    "filters": {
+      "kindLabel": "نوع الجلسة",
+      "modelLabel": "النموذج",
+      "workspaceLabel": "مساحة العمل",
+      "allModels": "جميع النماذج",
+      "allWorkspaces": "جميع مساحات العمل",
+      "searchPlaceholder": "ابحث عن العنوان أو معرف الجلسة أو المجلد أو النموذج…"
+    },
+    "dataDir": {
+      "label": "مجلد البيانات:",
+      "customBadge": "مخصص",
+      "choose": "تغيير المجلد",
+      "reset": "استعادة الافتراضي"
+    },
+    "actions": {
+      "refresh": "تحديث",
+      "rebuild": "إعادة الفحص",
+      "backToAccounts": "العودة إلى الحسابات"
+    },
+    "rebuildConfirm": {
+      "title": "إعادة فحص كاملة",
+      "message": "مسح ذاكرة الفحص المؤقتة المحلية في Cockpit Tools وإعادة قراءة جميع ملفات جلسات Antigravity بوضع القراءة فقط. هل تريد المتابعة؟"
+    },
+    "status": {
+      "scanning": "جارٍ فحص قواعد بيانات جلسات Antigravity…",
+      "ready": "تم فحص {{dbFiles}} ملف قاعدة بيانات · {{sessions}} جلسة · {{turns}} دور",
+      "idle": "لم يتم الفحص بعد",
+      "cacheStats": "الذاكرة المؤقتة {{hits}} إصابة / {{misses}} جديد ({{durationMs}} مللي ثانية)",
+      "scannedAt": "تمت المزامنة {{time}}"
+    },
+    "cards": {
+      "total": "إجمالي الرموز",
+      "totalExact": "إجمالي الرموز الدقيقة",
+      "input": "رموز الإدخال",
+      "thinking": "رموز التفكير",
+      "output": "رموز الإخراج",
+      "cache": "رموز التخزين المؤقت",
+      "conversations": "المحادثات",
+      "turns": "الأدوار",
+      "coverage": "التغطية الدقيقة",
+      "avgPerDay": "المتوسط / يوم نشط"
+    },
+    "estimated": {
+      "notice": "تم تقدير {{turns}} دور يفتقر لبيانات API الخام بشكل منفصل (لا يُضاف للإجمالي الدقيق):"
+    },
+    "trend": {
+      "title": "اتجاه استهلاك الرموز",
+      "empty": "لا يوجد استهلاك مسجل في النطاق الزمني المحدد"
+    },
+    "tables": {
+      "byModel": "حسب النموذج",
+      "byWorkspace": "حسب مساحة العمل",
+      "byKind": "حسب نوع الجلسة (رئيسية / Swarm / وكيل فرعي)",
+      "conversations": "جلسات المحادثة",
+      "conversationTitle": "المحادثة",
+      "modelName": "النموذج",
+      "workspaceName": "مساحة العمل",
+      "sessions": "الجلسات",
+      "turns": "الأدوار",
+      "total": "الإجمالي",
+      "updatedAt": "آخر تحديث"
+    },
+    "pagination": {
+      "info": "صفحة {{page}} / {{totalPages}} ({{totalItems}} جلسة)"
+    },
+    "detail": {
+      "openParent": "فتح الجلسة الأصلية",
+      "children": "الجلسات الفرعية (Swarm / وكيل فرعي)",
+      "turnsTimeline": "التسلسل الزمني للرموز لكل دور"
+    },
+    "empty": {
+      "title": "لا توجد بيانات استهلاك تطابق عوامل التصفية الحالية",
+      "desc": "جرّب تغيير النطاق الزمني إلى \"كل الأوقات\" أو اضغط تحديث بعد استخدام Antigravity.",
+      "dirMissing": "لم يتم العثور على مجلد بيانات Antigravity. يرجى التحقق من المسار أعلاه.",
+      "noRows": "لا توجد بيانات مطابقة"
+    },
+    "errors": {
+      "loadFailed": "تعذر تحميل إحصاءات الرموز: {{error}}",
+      "syncFailed": "فشل فحص استهلاك الرموز: {{error}}"
+    }
+  },
+  "t3code": {
+    "accountConfig": {
+      "title": "إعداد الحسابات",
+      "providers": "حسابات المزوّدين",
+      "codexCatalogPending": "مفاتيح الطرف الثالث بانتظار مزامنة النماذج: {{count}}"
+    },
+    "nativeSettings": {
+      "defaultModel": "نموذج المحادثة الجديدة",
+      "reasoning": "مستوى الاستدلال",
+      "notifications": "الإشعارات",
+      "desktop": "إشعارات سطح المكتب",
+      "sound": "الصوت",
+      "both": "الإشعارات والصوت",
+      "clientDefault": "إعداد T3 Code الافتراضي",
+      "connectRequired": "شغّل T3 Code عبر Cockpit لتحميل النماذج المتاحة.",
+      "savedForLaunch": "حُفظ للإطلاق التالي.",
+      "saveFailed": "تعذّر على T3 Code حفظ هذا الإعداد.",
+      "invalidModel": "هذا النموذج أو خيار الاستدلال لم يعد متاحًا.",
+      "sectionTitle": "إعدادات العميل"
+    },
+    "search": "البحث في حسابات T3 Code...",
+    "flowNotice": {
+      "title": "دليل ربط مزوّدي T3 Code الداخليين (انقر للطي أو التوسيع)",
+      "desc": "اختر من حسابات Cockpit المحفوظة لتعيين الحساب الافتراضي والحسابات المتوازية في T3 Code.",
+      "permission": "يحدّث Cockpit إعدادات T3 Code المحلية ومجلدات المزوّدين المُدارة، ويستخدم اتصالاً محليًا لمزامنة الحالة وإظهار شارة الحصة.",
+      "network": "يستخدم تحديث الحصة واجهة المزوّد المحدّد أو البوابة المحلية."
+    },
+    "empty": "لا توجد حسابات مضيفة لـ T3 Code",
+    "addAccount": "إضافة حساب T3 Code",
+    "oauth": {
+      "desc": "سجّل الدخول عبر Clerk داخل T3 Code أولاً، ثم استورد من العميل المحلي أو الصق رمز Clerk.",
+      "title": "تسجيل دخول Clerk في T3 Code",
+      "item1": "قراءة وحفظ جلسات ~/.t3/userdata/clerk/clerk-tokens.json",
+      "item2": "ربط ملفات تعريف مستقلة وحسابات مزودات بنسخ T3 Code المتعددة",
+      "item3": "حقن كبسولة الحصة وسرعة tok/s في شريط Composer السفلي",
+      "urlPlaceholder": "رابط تفويض T3 Code",
+      "waiting": "بانتظار تسجيل الدخول في T3 Code...",
+      "openWindow": "فتح في المتصفح"
+    },
+    "token": {
+      "tab": "Token / JSON",
+      "desc": "الصق رمز Clerk Session JWT أو محتوى clerk-tokens.json الخاص بـ T3 Code.",
+      "placeholder": "الصق Clerk JWT (eyJ...) أو clerk-tokens.json...",
+      "add": "حفظ حساب الرمز"
+    },
+    "import": {
+      "localDesc": "سجّل الدخول أولاً إلى T3 Connect أسفل يسار T3 Code ثم استورد بيانات الاعتماد المحلية أدناه (ستتزامن البريد وحصة الأنفاق عند تشغيل T3 Code).",
+      "localClient": "استيراد من T3 Code المحلي"
+    },
+    "providerWorkspace": {
+      "switchCodexRequiresGpt": "يتطلّب هذا الربط نموذج محادثة GPT أو Codex.",
+      "viewAccounts": "عرض كل الحسابات ({{count}})",
+      "accountInUse": "قيد الاستخدام",
+      "accountRestartPending": "بانتظار إعادة التشغيل",
+      "switchAccount": "تبديل الحساب",
+      "switchingAccount": "جارٍ تبديل الحساب…",
+      "switchAfterReply": "ينتظر التبديل حتى ينتهي المزوّد من الرد الحالي.",
+      "switchActiveRunTimeout": "لا يزال الرد جاريًا. جرّب التبديل بعد انتهائه.",
+      "switchSaved": "حُفظ الربط. أعد تشغيل T3 Code لتطبيقه.",
+      "switchBusy": "يجري تغيير مزوّد في مثيل T3 Code هذا.",
+      "switchTargetChanged": "تغيّر المزوّد أو الحساب. اختره مجددًا.",
+      "defaultAccountUnavailable": "استورد الحساب الافتراضي الحالي إلى Cockpit أولًا للاحتفاظ به.",
+      "defaultAccountSaved": "تم تحديث الحساب الافتراضي.",
+      "defaultSelectionSaved": "تم حفظ اختيار الحساب الافتراضي.",
+      "defaultWaiting": "بانتظار التطبيق",
+      "defaultApplyFailed": "تعذّر تطبيق الحساب الافتراضي",
+      "accountRemoved": "تمت إزالة الحساب من T3 Code.",
+      "removeSaved": "تم حفظ الإزالة. أعد تشغيل T3 Code لتطبيقها.",
+      "accountAlreadyAdded": "هذا الحساب متصل بالفعل ببيئة T3 Code هذه.",
+      "switchControlUnavailable": "تعذّر الاتصال بعناصر التحكم في مزوّدي T3 Code.",
+      "switchControlRejected": "رفض T3 Code تغيير المزوّد.",
+      "switchDetachTimeout": "انتهت مهلة فصل جلسة المزوّد السابقة.",
+      "switchVerificationFailed": "تعذّر على T3 Code التحقق من الحساب الجديد.",
+      "switchRollbackFailed": "تعذّرت استعادة إعدادات المزوّد السابقة. تحقّق من إعدادات المزوّد.",
+      "linkTab": "ربط الحسابات",
+      "linkAccount": "إضافة إلى T3 Code",
+      "addAccount": "إضافة حساب",
+      "unbound": "غير مرتبط",
+      "modelsReady": "النماذج المتاحة · {{count}}",
+      "authRequired": "يلزم التفويض",
+      "runtimePending": "جارٍ إعداد T3 Code",
+      "runtimeNotFound": "{{app}} غير موجود",
+      "runtimeError": "بيئة التشغيل غير متاحة",
+      "runtimeExplicitPath": "تحقق من مسار الملف التنفيذي المخصص لهذا المزوّد في إعدادات مزوّدي الوكلاء في T3 Code.",
+      "runtimeInstall": "تثبيت بيئة التشغيل المُدارة",
+      "runtimeInstallStarted": "بدأ T3 Code تثبيت بيئة التشغيل في الخلفية.",
+      "platformAccount": "حساب Cockpit",
+      "replaceAccount": "استبدال الحساب",
+      "noAccounts": "لا توجد حسابات متاحة لهذا المزوّد",
+      "saved": "تم حفظ الربط",
+      "currentAccount": "الربط الحالي",
+      "runtimeStatus": "حالة التشغيل",
+      "linkMode": "طريقة الربط",
+      "providerInstance": "مثيل المزوّد",
+      "selectInstance": "اختر مثيلًا",
+      "gatewayDisabled": "فعّل خدمة Codex API قبل ربطها بـ T3 Code.",
+      "claudeCodeOnly": "استخدم حساب Claude Code. هذا الحساب تابع لـ Claude Desktop.",
+      "title": "ربط وتبديل حسابات المزودات الداخلية في T3 Code",
+      "desc": "إعداد وتبديل مثيلات المزوّدين متعددي المنصات في ملف settings.json القياسي لـ T3 Code مع التمييز بين حسابات Cockpit وتسجيل دخول CLI المستقل.",
+      "defaultInstance": "النسخة الافتراضية (~/.t3)",
+      "targetInstance": "نسخة T3 Code المستهدفة",
+      "addProviderInstance": "نسخة مزود جديدة",
+      "isolatedHome": "مجلد معزول",
+      "sharedHome": "البيئة الافتراضية",
+      "selectAccountPlaceholder": "اختر حساباً للربط والتبديل...",
+      "quotaLabel": "المتبقي",
+      "noQuotaData": "اربط حساباً لعرض الحصة المباشرة",
+      "cacheHit": "إصابة التخزين المؤقت",
+      "modalTitle": "نسخة مزود داخلي جديدة في T3 Code",
+      "driverKindLabel": "نوع مشغل المزود",
+      "instanceNameLabel": "اسم عرض النسخة",
+      "instanceNamePlaceholder": "مثال: Codex Pro #2 / Claude Work",
+      "initialAccountLabel": "الحساب المربوط المبدئي (اختياري)",
+      "errors": {
+        "nameRequired": "يرجى إدخال اسم نسخة المزود"
+      },
+      "injectionConnected": "الكبسولة متصلة",
+      "needsRestartNotice": "برنامج T3 Code قيد التشغيل. أعد التشغيل لتطبيق إعدادات الحساب المحدّثة.",
+      "addProviderBtn": "إضافة موفّر",
+      "builtinTag": "افتراضي",
+      "customTag": "مخصّص",
+      "sharedLegacyTag": "إعداد مشترك (أعد التحديد للعزل)",
+      "switchAndVerify": "جارٍ الربط والتحقق...",
+      "toggleEnabled": "تبديل التفعيل",
+      "refreshAccountQuota": "تحديث حصة الحساب",
+      "renameInstance": "إعادة تسمية المثيل",
+      "deleteConfirmTitle": "حذف مثيل الموفّر",
+      "deleteConfirmDesc": "افصل «{{name}}» عن T3 Code. سيبقى حساب Cockpit وسجل المحادثات محفوظين.",
+      "verifiedReady": "تم التحقق · {{count}} نموذج",
+      "stagedReady": "جاهز · {{count}} نموذج (أعد التشغيل)",
+      "needsSyncVerify": "يتطلب التحقق",
+      "readyOnLaunch": "يُحمَّل عند البدء",
+      "reverifyAccount": "إعادة مزامنة بيانات الاعتماد والتحقق منها",
+      "accountPlatformsGroup": "ربط حساب Cockpit",
+      "cliPlatformsGroup": "تسجيل دخول CLI / ACP مستقل",
+      "cliModeDesc": "يُسجّل {{platform}} وفق إعدادات T3 Code القياسية؛ وتُدار المصادقة والنماذج بواسطة أداة CLI أو وكيل ACP نفسه.",
+      "cliOwnLogin": "دخول CLI مستقل",
+      "cliManagedQuota": "الحصة تُدار عبر CLI",
+      "cliReady": "CLI جاهز"
+    },
+    "usageNormal": "طبيعي",
+    "usageAbnormal": "خطأ",
+    "usageViewDetail": "عرض التفاصيل",
+    "usageDetailTitle": "تفاصيل الاستخدام",
+    "usage": "حالة الاستخدام",
+    "quota": {
+      "included": "أنفاق T3 Connect",
+      "models": "حصة النماذج",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "تم التحديث: {{time}}",
+      "expireAt": "ينتهي: {{time}}"
+    },
+    "quotaQuery": {
+      "restartToApply": "أعد تشغيل T3 Code للتطبيق",
+      "multipleModels": "نماذج متعددة",
+      "failedRefreshCompact": "فشل استعلام الحصة",
+      "empty": "لا توجد بيانات حصة",
+      "sectionTitle": "الحصة"
+    },
+    "instances": {
+      "unsupported": "تعدد النسخ لـ T3 Code متاح فقط على macOS وWindows وLinux."
+    },
+    "planUnlinked": "غير مرتبط",
+    "usagePending": "بانتظار المزامنة",
+    "syncUnavailable": "تعذّرت مزامنة حصة الأنفاق. شغّل T3 Code من Cockpit Tools وسجّل الدخول إلى هذا الحساب.",
+    "pendingSyncIdentity": "شغّل T3 Code للمزامنة",
+    "overview": {
+      "setDefaultAccount": "تعيين كافتراضي",
+      "removeAccount": "إزالة",
+      "actions": "الإجراءات",
+      "noLinkedAccounts": "لا توجد حسابات مرتبطة",
+      "defaultAffectsExisting": "تحتفظ المحادثات الحالية بالمزوّد نفسه وتستخدم حسابه المحدّث للطلبات اللاحقة.",
+      "accountMismatch": "عدم تطابق الحساب",
+      "localGatewayBadge": "بوابة محلية",
+      "bindAccountAction": "ربط حساب",
+      "openPlatformPool": "مجموعة {{platform}}",
+      "searchProvidersPlaceholder": "ابحث عن المثيلات أو الحسابات أو المنصات...",
+      "sortByDefault": "الترتيب الافتراضي",
+      "sortByQuota": "حسب الحصة المتبقية",
+      "sortByName": "حسب الاسم",
+      "viewCandidateAccounts": "الحسابات ({{count}})",
+      "viewMoreAccounts": "+{{count}} · عرض المزيد",
+      "platformAccountsTitle": "حسابات {{platform}}",
+      "mountAsParallelInstance": "إضافة حساب موازٍ",
+      "manageInSourcePlatform": "فتح {{platform}}",
+      "searchAccountsPlaceholder": "ابحث في حسابات {{platform}}...",
+      "goAddSourceAccount": "إضافة في {{platform}}",
+      "emptyPoolDesc": "أضف حسابًا متاحًا في صفحة {{platform}} أولاً ثم قم بتبديله إلى T3 Code."
+    }
   }
 }

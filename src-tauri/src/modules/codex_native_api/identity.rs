@@ -29,6 +29,8 @@ mod automatic_history;
 mod key_continuity;
 #[path = "identity_partial_history.rs"]
 mod partial_history;
+#[path = "identity_maintenance.rs"]
+pub mod maintenance;
 pub(crate) use partial_history::PartialHistory;
 #[cfg(test)]
 #[path = "identity_opaque_replay_tests.rs"]
@@ -48,6 +50,7 @@ pub struct IdentityStore {
     path: PathBuf,
     session_identity_mapping_enabled: AtomicBool,
     shared_continuation_references: AtomicBool,
+    maintenance_running: AtomicBool,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +64,8 @@ pub struct RequestIdentity {
     pub state_account_id: Option<String>,
     caller: String,
     session_identity_mapping_enabled: bool,
+    pub(super) generated_session: bool,
+    prompt_cache_session: Option<String>,
     /// Ordinary forwarding does not require proof that history can be replayed.
     forwarding: bool,
     turn_id: Option<String>,
@@ -82,6 +87,26 @@ impl RequestIdentity {
     pub(super) fn restrict_session_mapping(&mut self, allowed: bool) -> bool {
         self.session_identity_mapping_enabled &= allowed;
         self.session_identity_mapping_enabled
+    }
+
+    pub(super) fn use_prompt_cache_session(
+        &mut self,
+        headers: &HeaderMap,
+        body: &Value,
+    ) -> Result<(), ServiceError> {
+        if self.opaque.is_empty()
+            && self.parent_thread_id.is_none()
+            && self.turn_id.is_none()
+            && self.canonical_metadata.is_none()
+            && !headers.contains_key("session-id")
+            && !headers.contains_key("x-codex-window-id")
+        {
+            // The upstream cache partition can be shared by independent
+            // requests. Keep thread, history and routing identities separate.
+            self.prompt_cache_session = identity_value(body.get("prompt_cache_key"))?
+                .map(|key| super::compat_http::cache_digest(["responses-cache-session", &key]));
+        }
+        Ok(())
     }
 }
 
@@ -353,6 +378,8 @@ impl IdentityStore {
         connection
             .busy_timeout(Duration::from_secs(2))
             .map_err(|error| error.to_string())?;
+        maintenance::enable_incremental_auto_vacuum_if_empty(&connection)
+            .map_err(|error| error.to_string())?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS native_identity_v1 (
@@ -375,12 +402,13 @@ impl IdentityStore {
                 account TEXT NOT NULL, owner TEXT NOT NULL, completed_at INTEGER NOT NULL);"
         ).map_err(|error| error.to_string())?;
         rebuild::initialize(&connection).map_err(|error| error.to_string())?;
-        partial_history::initialize(&connection).map_err(|error| error.to_string())?;
+        let connection = maintenance::migrate_and_slim_on_open(&path, connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             path,
             session_identity_mapping_enabled: AtomicBool::new(true),
             shared_continuation_references: AtomicBool::new(false),
+            maintenance_running: AtomicBool::new(false),
         })
     }
 
@@ -528,12 +556,20 @@ impl IdentityStore {
         {
             opaque.push(digest("parent_response", &value));
         }
-        // Generic Responses clients need not expose Codex metadata. A new stateless
-        // request gets its own root; a child without a session uses its own thread,
-        // never the parent or cache routing alias as a guessed root.
+        // Claude compatibility validates a client session and agent before
+        // setting its internal scope. Use it only when no native identity or
+        // response reference supplied a root. Stateless requests remain unique.
+        let generated_session = session_id.is_none()
+            && thread_id.is_none()
+            && !headers.contains_key(super::compat_http::CLAUDE_CACHE_SCOPE);
         match (&session_id, &thread_id) {
             (None, None) => {
-                let root = uuid::Uuid::now_v7().to_string();
+                let root = headers
+                    .get(super::compat_http::CLAUDE_CACHE_SCOPE)
+                    .and_then(|scope| scope.to_str().ok())
+                    .filter(|_| opaque.is_empty() && parent_thread_id.is_none())
+                    .map(|scope| super::compat_http::cache_digest(["claude-session", caller, scope]))
+                    .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
                 session_id = Some(root.clone());
                 thread_id = Some(root);
             }
@@ -796,6 +832,8 @@ impl IdentityStore {
             state_account_id,
             caller: caller.to_owned(),
             session_identity_mapping_enabled,
+            generated_session,
+            prompt_cache_session: None,
             forwarding,
             turn_id,
             opaque,
@@ -887,7 +925,13 @@ impl IdentityStore {
                     && context.rebuild_input.as_ref().is_some_and(|input| {
                         super::responses_custom_results::replayable(input)
                     })));
+        let wait_started = std::time::Instant::now();
         let mut connection = self.connection.lock().map_err(storage)?;
+        let lock_wait = wait_started.elapsed();
+        if lock_wait >= Duration::from_secs(1) {
+            tracing::warn!(target: "codex_api", elapsed_ms = lock_wait.as_millis() as u64,
+                "[NativeAPI][slow_identity_rewrite_lock]");
+        }
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage)?;
@@ -947,13 +991,28 @@ impl IdentityStore {
         let generation = rebuild::select_generation(&transaction, context, owner_id)?;
         let mapping_owner = rebuild::mapping_owner(owner_id, generation.as_ref());
         if context.session_identity_mapping_enabled {
+            // An account retry can allocate a new history generation for each
+            // stateless request. Its cache identifiers are scoped to the caller
+            // and account owner, independent of that history generation.
+            let cache_owner = if context.prompt_cache_session.is_some() {
+                owner_id
+            } else {
+                &mapping_owner
+            };
             rewrite_headers(
                 &transaction,
                 &context.caller,
                 &mapping_owner,
+                cache_owner,
                 &mut new_headers,
             )?;
-            rewrite_body(&transaction, &context.caller, &mapping_owner, &mut new_body)?;
+            rewrite_body(
+                &transaction,
+                &context.caller,
+                &mapping_owner,
+                cache_owner,
+                &mut new_body,
+            )?;
         }
         // Passthrough retains related parent/window/cache references as well:
         // mapping those independently would break the client's original IDs.
@@ -978,6 +1037,7 @@ impl IdentityStore {
             }
         }
         transaction.commit().map_err(storage)?;
+        drop(connection);
         *headers = new_headers;
         *body = new_body;
         let pending_input = (generation.is_none() && !context.unregistered_blobs.is_empty())
@@ -1251,7 +1311,11 @@ fn supplement_identities(
     // internal requests). Thread-Id and x-client-request-id are projections of
     // the logical thread, however, and must never retain stale header values.
     if header_identity(headers, "session-id")?.is_none() {
-        set_identity_header(headers, "session-id", context.session_id.as_deref())?;
+        set_identity_header(
+            headers,
+            "session-id",
+            context.prompt_cache_session.as_deref().or(context.session_id.as_deref()),
+        )?;
     }
     // Forward only the canonical spelling through the caller/owner mapping;
     // never leave the original alias alongside the isolated upstream identity.
@@ -1603,6 +1667,7 @@ fn rewrite_headers(
     transaction: &Transaction<'_>,
     caller: &str,
     owner: &str,
+    cache_owner: &str,
     headers: &mut HeaderMap,
 ) -> Result<(), ServiceError> {
     for name in [
@@ -1618,6 +1683,8 @@ fn rewrite_headers(
             let owner = if name == "x-codex-parent-thread-id" {
                 parent_owner = parent_mapping_owner(transaction, caller, owner, &original)?;
                 parent_owner.as_str()
+            } else if name == "session-id" {
+                cache_owner
             } else {
                 owner
             };
@@ -1653,9 +1720,10 @@ fn rewrite_body(
     transaction: &Transaction<'_>,
     caller: &str,
     owner: &str,
+    cache_owner: &str,
     body: &mut Value,
 ) -> Result<(), ServiceError> {
-    map_field(transaction, caller, owner, body, "prompt_cache_key", false)?;
+    map_field(transaction, caller, cache_owner, body, "prompt_cache_key", false)?;
     if let Some(metadata) = body.get_mut("client_metadata") {
         for key in [
             "session_id",

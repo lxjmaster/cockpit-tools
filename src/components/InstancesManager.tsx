@@ -1,4 +1,4 @@
-import { isLaunchPathApp, readMissingLaunchPathApp } from '../utils/appLaunchPath';
+import { isLaunchPathApp, readInvalidWorkbuddyPath, readMissingLaunchPathApp } from '../utils/appLaunchPath';
 import { useDurableUiSetting } from '../hooks/useDurableUiSetting';
 import { previewDurableUiSetting } from '../utils/durableUiSettings';
 import { isCodexLaunchCancelled } from '../utils/codexLaunchCancellation';
@@ -31,6 +31,7 @@ import {
   ArrowDownWideNarrow,
   RefreshCw,
   ExternalLink,
+  Link2,
   Eye,
   EyeOff,
   ArrowDown,
@@ -213,7 +214,8 @@ interface InstancesManagerProps<TAccount extends AccountLike> {
     | "trae_solo_cn"
     | "workbuddy"
     | "minimax_code"
-    | "zcode";
+    | "zcode"
+    | "t3code";
   onLaunchRequest?: (instance: InstanceProfile) => void;
   onInstanceStarted?: (instance: InstanceProfile) => void | Promise<void>;
   onBeforeStart?: (instance: InstanceProfile) => boolean | Promise<boolean>;
@@ -227,6 +229,7 @@ interface InstancesManagerProps<TAccount extends AccountLike> {
     launchMode: InstanceLaunchMode,
   ) => boolean;
   toolbarExtraActions?: ReactNode;
+  onManageInstanceProviders?: (instance: InstanceProfile) => void;
 }
 
 const INSTANCE_AUTO_REFRESH_INTERVAL_MS = 10_000;
@@ -636,8 +639,17 @@ export function InstancesManager<TAccount extends AccountLike>({
   resolveStartSuccessMessage,
   isAccountAllowedForLaunchMode,
   toolbarExtraActions,
+  onManageInstanceProviders,
 }: InstancesManagerProps<TAccount>) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const copyTimeoutDuration = useMemo(
+    () => new Intl.NumberFormat(i18n.resolvedLanguage ?? i18n.language, {
+      style: "unit",
+      unit: "minute",
+      unitDisplay: "short",
+    }),
+    [i18n.resolvedLanguage, i18n.language],
+  );
   const {
     instances,
     defaults,
@@ -712,6 +724,7 @@ export function InstancesManager<TAccount extends AccountLike>({
   const [formCodexOpenConfigLoading, setFormCodexOpenConfigLoading] =
     useState(false);
   const [formCopySourceInstanceId, setFormCopySourceInstanceId] = useState("");
+  const [formCopyTimeoutMinutes, setFormCopyTimeoutMinutes] = useState("10");
   const [formError, setFormError] = useState<string | null>(null);
   const formErrorRef = useRef<HTMLDivElement | null>(null);
   const copyAutoNameRef = useRef("");
@@ -1072,6 +1085,7 @@ export function InstancesManager<TAccount extends AccountLike>({
     setFormWorkingDir("");
     setFormExtraArgs("");
     setFormInitMode("empty");
+    setFormCopyTimeoutMinutes("10");
     setFormLaunchMode(isCliOnlyApp ? "cli" : "app");
     setFormAppSpeed("standard");
     setFormBindAccountId("");
@@ -1630,6 +1644,10 @@ export function InstancesManager<TAccount extends AccountLike>({
             : resolveBindAccountValue(formBindAccountId),
           modelRouting: nextModelRouting,
           copySourceInstanceId: formCopySourceInstanceId || defaultInstanceId,
+          copyTimeoutSeconds:
+            isCodexApp && formInitMode === "copy"
+              ? Number(formCopyTimeoutMinutes) * 60
+              : undefined,
         });
         if (
           created?.id &&
@@ -1696,7 +1714,8 @@ export function InstancesManager<TAccount extends AccountLike>({
   const handleMissingPathError = (error: unknown, instanceId?: string) => {
     if (isCodexApp && isCodexLaunchCancelled(error)) return true;
     const message = String(error ?? "");
-    const app = message === 'APP_PATH_NOT_FOUND:antigravity_legacy'
+    const invalidWorkbuddyPath = readInvalidWorkbuddyPath(error);
+    const app = invalidWorkbuddyPath ? 'workbuddy' : message === 'APP_PATH_NOT_FOUND:antigravity_legacy'
       ? 'antigravity'
       : message.startsWith('CLAUDE_MULTI_INSTANCE_REQUIRES_EXE:')
         ? 'claude'
@@ -1714,7 +1733,7 @@ export function InstancesManager<TAccount extends AccountLike>({
       ? { kind: "instance" as const, instanceId, runtimeTarget }
       : { kind: "default" as const, runtimeTarget };
     window.dispatchEvent(
-      new CustomEvent("app-path-missing", { detail: { app, pathRuntimeTarget, retry } }),
+      new CustomEvent("app-path-missing", { detail: { app, pathRuntimeTarget, retry, invalidWorkbuddyPath } }),
     );
     return true;
   };
@@ -2901,6 +2920,18 @@ export function InstancesManager<TAccount extends AccountLike>({
                 </div>
 
                 <div className="instance-actions">
+                  {onManageInstanceProviders && (
+                    <button
+                      className="icon-button"
+                      title={t("t3code.providerWorkspace.linkTab")}
+                      onClick={() => onManageInstanceProviders(instance)}
+                      disabled={
+                        isInstanceBusy || restartingAll || bulkActionLoading
+                      }
+                    >
+                      <Link2 size={16} />
+                    </button>
+                  )}
                   <button
                     className="icon-button"
                     title={floatingCardActionTitle}
@@ -3423,6 +3454,21 @@ export function InstancesManager<TAccount extends AccountLike>({
                         "会复制来源实例的目录、绑定账号、启动方式和混合路由，不必重新配一遍。",
                       )}
                     </p>
+                    {isCodexApp && (
+                      <div className="form-group">
+                        <label>{t("instances.form.copyTimeout", "Copy timeout")}</label>
+                        <SingleSelectDropdown
+                          value={formCopyTimeoutMinutes}
+                          onChange={setFormCopyTimeoutMinutes}
+                          options={[2, 10, 30, 60].map((minutes) => ({
+                            value: String(minutes),
+                            label: copyTimeoutDuration.format(minutes),
+                          }))}
+                          ariaLabel={t("instances.form.copyTimeout", "Copy timeout")}
+                          className="instance-copy-source-select"
+                        />
+                      </div>
+                    )}
                     {selectedCopySourceInstance?.running && (
                       <p className="form-hint warning">
                         {t(

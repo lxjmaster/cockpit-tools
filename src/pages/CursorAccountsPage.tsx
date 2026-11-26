@@ -39,6 +39,7 @@ import { PaginationControls } from '../components/PaginationControls';
 import { AccountSelectionToolbar } from '../components/AccountSelectionToolbar';
 import { usePlatformAccountGroups } from '../hooks/usePlatformAccountGroups';
 import { QuickSettingsPopover } from '../components/QuickSettingsPopover';
+import { PlatformQuotaHistoryButton } from '../components/PlatformQuotaHistoryButton';
 import { MultiSelectFilterDropdown, type MultiSelectFilterOption } from '../components/MultiSelectFilterDropdown';
 import { SingleSelectFilterDropdown } from '../components/SingleSelectFilterDropdown';
 import {
@@ -821,8 +822,22 @@ export function CursorAccountsPage() {
                   <input type="checkbox" checked={groupByTag} onChange={(e) => setGroupByTag(e.target.checked)} />
                   <span>{t('accounts.groupByTag', '按标签分组展示')}</span>
                 </label>
-                {tagFilter.length > 0 && (
-                  <button type="button" className="tag-filter-clear" onClick={clearTagFilter}>{t('accounts.clearFilter', '清空筛选')}</button>
+                {(availableTags.length > 0 || tagFilter.length > 0) && (
+                  <div className="tag-filter-actions">
+                    {availableTags.length > 0 && (
+                      <button
+                        type="button"
+                        className="tag-filter-action-btn"
+                        disabled={availableTags.every((tag) => tagFilter.includes(tag))}
+                        onClick={() => availableTags.forEach((tag) => { if (!tagFilter.includes(tag)) toggleTagFilterValue(tag); })}
+                      >
+                        {t('common.selectAll', '全选')}
+                      </button>
+                    )}
+                    {tagFilter.length > 0 && (
+                      <button type="button" className="tag-filter-clear" onClick={clearTagFilter}>{t('accounts.clearFilter', '清空筛选')}</button>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -874,6 +889,9 @@ export function CursorAccountsPage() {
               <CircleAlert size={14} />
             </button>
           )}
+          <PlatformQuotaHistoryButton platform="cursor" accounts={accounts.map((account) => ({
+            value: account.id, label: maskAccountText(getCursorAccountDisplayEmail(account)), createdAt: account.created_at,
+          }))} />
           <QuickSettingsPopover type="cursor" />
         </div>
       </div>

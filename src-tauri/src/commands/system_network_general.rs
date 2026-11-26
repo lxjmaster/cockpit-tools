@@ -315,6 +315,8 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         minimax_code_auto_refresh_minutes: user_config.minimax_code_auto_refresh_minutes,
         qoder_auto_refresh_minutes: user_config.qoder_auto_refresh_minutes,
         zcode_auto_refresh_minutes: user_config.zcode_auto_refresh_minutes,
+        t3code_auto_refresh_minutes: user_config.t3code_auto_refresh_minutes,
+        t3code_app_ui_injection_enabled: user_config.t3code_app_ui_injection_enabled,
         trae_auto_refresh_minutes: user_config.trae_auto_refresh_minutes,
         trae_solo_auto_refresh_minutes: user_config.trae_solo_auto_refresh_minutes,
         trae_cn_auto_refresh_minutes: user_config.trae_cn_auto_refresh_minutes,
@@ -324,7 +326,9 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         hide_dock_icon: user_config.hide_dock_icon,
         show_tray_icon: user_config.show_tray_icon,
         tray_icon_style: user_config.tray_icon_style.as_str().to_string(),
+        menu_bar_left_click_opens_main_window: user_config.menu_bar_left_click_opens_main_window,
         menu_bar_quota_enabled: user_config.menu_bar_quota_enabled,
+        menu_bar_quota_layout: user_config.menu_bar_quota_layout,
         menu_bar_show_account_prefix: user_config.menu_bar_show_account_prefix,
         menu_bar_quota_platform: user_config.menu_bar_quota_platform,
         menu_bar_antigravity_metric: user_config.menu_bar_antigravity_metric,
@@ -363,6 +367,7 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
             &user_config.claude_app_path,
         ),
         claude_app_scan_roots: user_config.claude_app_scan_roots,
+        claude_share_code_sessions_on_switch: user_config.claude_share_code_sessions_on_switch,
         codex_specified_app_path: modules::process::normalize_windows_user_facing_path(
             &user_config.codex_specified_app_path,
         ),
@@ -394,6 +399,9 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         ),
         zcode_app_path: modules::process::normalize_windows_user_facing_path(
             &user_config.zcode_app_path,
+        ),
+        t3code_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.t3code_app_path,
         ),
         trae_app_path: modules::process::normalize_windows_user_facing_path(
             &user_config.trae_app_path,
@@ -434,6 +442,8 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         openclaw_auth_overwrite_on_switch: user_config.openclaw_auth_overwrite_on_switch,
         hermes_auth_overwrite_on_switch: user_config.hermes_auth_overwrite_on_switch,
         codex_launch_on_switch: user_config.codex_launch_on_switch,
+        codex_automatic_session_repair: user_config.codex_automatic_session_repair,
+        codex_cli_auto_refresh_on_switch: user_config.codex_cli_auto_refresh_on_switch,
         codex_auto_restore_takeover_on_launch: user_config.codex_auto_restore_takeover_on_launch,
         antigravity_launch_on_switch: user_config.antigravity_launch_on_switch,
         codex_restart_specified_app_on_switch: user_config.codex_restart_specified_app_on_switch,
@@ -566,8 +576,6 @@ pub fn patch_general_config(
     let mut floating_always_on_top_changed = false;
     let mut tray_visibility_changed = false;
     #[cfg(target_os = "macos")]
-    let mut hide_dock_icon_changed = false;
-    #[cfg(target_os = "macos")]
     let mut tray_icon_style_changed = false;
     #[cfg(target_os = "macos")]
     let mut menu_bar_quota_changed = false;
@@ -579,12 +587,11 @@ pub fn patch_general_config(
         let previous_floating_always_on_top = current.floating_card_always_on_top;
         let previous_show_tray_icon = current.show_tray_icon;
         #[cfg(target_os = "macos")]
-        let previous_hide_dock_icon = crate::should_hide_dock_icon(current);
-        #[cfg(target_os = "macos")]
         let previous_tray_icon_style = current.tray_icon_style;
         #[cfg(target_os = "macos")]
         let previous_menu_bar_quota = (
             current.menu_bar_quota_enabled,
+            current.menu_bar_quota_layout.clone(),
             current.menu_bar_show_account_prefix,
             current.menu_bar_quota_platform.clone(),
             current.menu_bar_antigravity_metric.clone(),
@@ -603,11 +610,11 @@ pub fn patch_general_config(
         tray_visibility_changed = previous_show_tray_icon != current.show_tray_icon;
         #[cfg(target_os = "macos")]
         {
-            hide_dock_icon_changed = previous_hide_dock_icon != crate::should_hide_dock_icon(current);
             tray_icon_style_changed = previous_tray_icon_style != current.tray_icon_style;
             menu_bar_quota_changed = previous_menu_bar_quota
                 != (
                     current.menu_bar_quota_enabled,
+                    current.menu_bar_quota_layout.clone(),
                     current.menu_bar_show_account_prefix,
                     current.menu_bar_quota_platform.clone(),
                     current.menu_bar_antigravity_metric.clone(),
@@ -657,9 +664,7 @@ pub fn patch_general_config(
     }
 
     #[cfg(target_os = "macos")]
-    if hide_dock_icon_changed && !tray_visibility_changed {
-        crate::apply_macos_activation_policy(&app);
-    }
+    modules::app_presence::apply_configured_policy(&app);
 
     #[cfg(target_os = "macos")]
     if tray_icon_style_changed {

@@ -1,43 +1,38 @@
-import { LaunchPathSettingsButton } from '../LaunchPathSettingsButton';
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { open } from '@tauri-apps/plugin-dialog';
-import { openUrl } from '@tauri-apps/plugin-opener';
-import { Check, Copy, ExternalLink, Monitor, RefreshCw, Terminal, X } from 'lucide-react';
+import { Check, Copy, Monitor, RefreshCw, Terminal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useEscCloseTopmost } from '../../hooks/useEscClose';
 import { useLaunchTerminalOptions } from '../../hooks/useLaunchTerminalOptions';
 import { useDurableUiSetting } from '../../hooks/useDurableUiSetting';
 import { CliLaunchFields } from '../CliLaunchFields';
 import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
-import { getCodebuddyCliLaunchCommand, getCodebuddyCliWorkingDir, isCodebuddyCliAvailable, launchCodebuddyCli, type CodebuddyCliAccountRef, type CodebuddyCliLaunchTarget } from '../../services/codebuddyCliService';
+import { getCodebuddyCliLaunchCommand, getCodebuddyCliWorkingDir, launchCodebuddyCli, type CodebuddyCliAccountRef, type CodebuddyCliLaunchTarget } from '../../services/codebuddyCliService';
+import { readMissingLaunchPathApp } from '../../utils/appLaunchPath';
 import { presentWindowsOperationError } from '../../utils/windowsOperationDialog';
 import { CODEBUDDY_CN_LAUNCH_MODE_STORAGE_KEY, previewDurableUiSetting } from '../../utils/durableUiSettings';
 import { CodebuddyIcon } from '../icons/CodebuddyIcon';
 import { ModalErrorMessage } from '../ModalErrorMessage';
+import { PlatformLaunchPathField } from '../PlatformLaunchPathField';
 import '../ClientLaunchDialog.css';
 import './CodebuddyLaunchDialog.css';
 
-const INSTALL_COMMAND = 'npm install -g @tencent-ai/codebuddy-code';
-const INSTALL_GUIDE = 'https://www.codebuddy.cn/docs/cli/installation';
-
 type LaunchMode = 'desktop' | 'cli';
-type CliStatus = 'checking' | 'available' | 'missing' | 'failed';
 
 interface Props {
   account: CodebuddyCliAccountRef;
   accountLabel: string;
   plan: string;
   planClass: string;
-  instance?: { id: string; workingDir: string };
+  initialMode?: LaunchMode;
   onLaunchDesktop?: () => Promise<void>;
   onClose: (launched?: boolean) => void;
-  onDirectoryRemembered?: (workingDir: string) => void;
 }
 
 export function CodebuddyLaunchDialog({
-  account, accountLabel, plan, planClass, instance, onLaunchDesktop, onClose, onDirectoryRemembered,
+  account, accountLabel, plan, planClass, initialMode = 'desktop', onLaunchDesktop, onClose,
 }: Props) {
   const { t } = useTranslation();
   const titleId = useId();
@@ -48,33 +43,35 @@ export function CodebuddyLaunchDialog({
   const launchModeKey = account.region === 'china' && onLaunchDesktop ? CODEBUDDY_CN_LAUNCH_MODE_STORAGE_KEY : undefined;
   const rememberedMode = useDurableUiSetting(launchModeKey);
   const [selectedMode, setSelectedMode] = useState<LaunchMode>();
-  const mode = onLaunchDesktop ? selectedMode ?? (rememberedMode === 'cli' ? 'cli' : 'desktop') : 'cli';
-  const [cliStatus, setCliStatus] = useState<CliStatus>('checking');
-  const [cliCheck, setCliCheck] = useState(0);
-  const [workingDir, setWorkingDir] = useState(instance?.workingDir ?? '');
+  const mode = onLaunchDesktop
+    ? selectedMode ?? (rememberedMode === 'cli' || rememberedMode === 'desktop' ? rememberedMode : initialMode)
+    : 'cli';
+  const [workingDir, setWorkingDir] = useState('');
   const [customCommand, setCustomCommand] = useState('');
   const [commandCopied, setCommandCopied] = useState(false);
-  const [loadingDirectory, setLoadingDirectory] = useState(!instance);
+  const [loadingDirectory, setLoadingDirectory] = useState(true);
   const [directoryReadFailed, setDirectoryReadFailed] = useState(false);
   const [launching, setLaunching] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [pathSaving, setPathSaving] = useState(false);
+  const [pathRecovery, setPathRecovery] = useState<{ copy: boolean; revision: number }>();
   const [error, setError] = useState<string>();
   const [invalidDirectory, setInvalidDirectory] = useState(false);
   const isCli = mode === 'cli';
+  const pathTarget = isCli ? 'codebuddy_cli' : account.region === 'china' ? 'codebuddy_cn' : 'codebuddy';
+  const disabled = launching || pathSaving;
   const { terminalOptions, selectedTerminal, setSelectedTerminal } = useLaunchTerminalOptions(isCli);
-  const cliTarget: CodebuddyCliLaunchTarget = instance
-    ? { kind: 'instance', id: instance.id, workingDir: workingDir.trim() === instance.workingDir ? undefined : workingDir.trim() }
-    : { kind: 'account', account, workingDir: workingDir.trim() || undefined, rememberWorkingDir: true };
-  const cliBlocked = isCli && (cliStatus === 'checking' || cliStatus === 'failed' || loadingDirectory);
-  const title = t(onLaunchDesktop ? 'codebuddyCli.launchTitle' : 'codebuddyCli.launch');
-  const launchLabel = t(isCli && cliStatus === 'missing' ? 'appPath.missing.configurePath' : isCli ? 'instances.launchDialog.runInTerminal' : 'codebuddyCli.launchDesktop');
+  const cliTarget: CodebuddyCliLaunchTarget = {
+    kind: 'account', account, workingDir: workingDir.trim() || undefined, rememberWorkingDir: true,
+  };
+  const directoryPending = isCli && loadingDirectory && !edited.current;
+  const title = t('codebuddyCli.launchTitle', { app: account.region === 'china' ? 'CodeBuddy CN' : 'CodeBuddy' });
+  const launchLabel = t(isCli ? 'instances.launchDialog.runInTerminal' : 'codebuddyCli.launchDesktop');
   const LaunchIcon = isCli ? Terminal : Monitor;
 
   useModalFocusTrap(dialog, true);
-  useEscCloseTopmost(true, () => { if (!launching) onClose(); }, dialog);
+  useEscCloseTopmost(true, () => { if (!disabled) onClose(); }, dialog);
 
   useEffect(() => {
-    if (instance) return;
     let active = true;
     void getCodebuddyCliWorkingDir({ region: account.region, accountId: account.accountId })
       .then((saved) => {
@@ -83,23 +80,7 @@ export function CodebuddyLaunchDialog({
       .catch(() => { if (active && !edited.current) setDirectoryReadFailed(true); })
       .finally(() => { if (active) setLoadingDirectory(false); });
     return () => { active = false; };
-  }, [account.accountId, account.region, instance]);
-
-  useEffect(() => {
-    if (!isCli) return;
-    const refresh = () => setCliCheck((check) => check + 1);
-    window.addEventListener('config-updated', refresh);
-    return () => window.removeEventListener('config-updated', refresh);
-  }, [isCli]);
-
-  useEffect(() => {
-    if (!isCli) return;
-    let active = true;
-    void isCodebuddyCliAvailable()
-      .then((available) => { if (active) setCliStatus(available ? 'available' : 'missing'); })
-      .catch(() => { if (active) setCliStatus('failed'); });
-    return () => { active = false; };
-  }, [isCli, cliCheck]);
+  }, [account.accountId, account.region]);
 
   function selectMode(nextMode: LaunchMode) {
     setSelectedMode(nextMode);
@@ -107,18 +88,10 @@ export function CodebuddyLaunchDialog({
       previewDurableUiSetting(launchModeKey, nextMode);
     }
     if (nextMode === mode) return;
-    if (nextMode === 'cli') setCliStatus('checking');
+    setPathRecovery(undefined);
     setError(undefined);
     setInvalidDirectory(false);
-    setCopied(false);
     setCommandCopied(false);
-  }
-
-  function recheckCli() {
-    setCliStatus('checking');
-    setCliCheck((check) => check + 1);
-    setError(undefined);
-    setCopied(false);
   }
 
   function updateDirectory(value: string) {
@@ -139,27 +112,8 @@ export function CodebuddyLaunchDialog({
     }
   }
 
-  async function copyInstallCommand() {
-    setError(undefined);
-    try {
-      await writeText(INSTALL_COMMAND);
-      setCopied(true);
-    } catch (reason) {
-      setError(t('messages.actionFailed', { action: t('common.copy'), error: String(reason) }));
-    }
-  }
-
-  async function openInstallGuide() {
-    setError(undefined);
-    try {
-      await openUrl(INSTALL_GUIDE);
-    } catch (reason) {
-      setError(t('messages.actionFailed', { action: t('codebuddyCli.installGuide'), error: String(reason) }));
-    }
-  }
-
   async function run(copy: boolean) {
-    if (pending.current || cliBlocked) return;
+    if (pending.current || directoryPending) return;
     pending.current = true;
     setLaunching(true);
     setError(undefined);
@@ -169,36 +123,35 @@ export function CodebuddyLaunchDialog({
       if (isCli) {
         if (copy) {
           const command = await getCodebuddyCliLaunchCommand(cliTarget, customCommand);
-          if (instance) onDirectoryRemembered?.(workingDir.trim());
           try {
             await writeText(command);
           } catch {
             setError(t('common.shared.export.copyFailed'));
             return;
           }
+          setPathRecovery(undefined);
           setCommandCopied(true);
           return;
         }
         await launchCodebuddyCli(cliTarget, selectedTerminal, customCommand);
-        if (instance) onDirectoryRemembered?.(workingDir.trim());
       } else {
         await onLaunchDesktop?.();
       }
       onClose(true);
     } catch (reason) {
-      const code = String(reason);
+      const code = String(reason).replace(/^Error: /, '');
+      if ((isCli && code === 'cliMissing') || readMissingLaunchPathApp(reason) === pathTarget) {
+        setPathRecovery((previous) => ({ copy, revision: (previous?.revision ?? 0) + 1 }));
+        return;
+      }
+      setPathRecovery(undefined);
       if (isCli) {
-        if (code === 'cliMissing') {
-          setCliStatus('missing');
-        } else if (code === 'workingDirInvalid') {
+        if (code === 'workingDirInvalid') {
           setInvalidDirectory(true);
           requestAnimationFrame(() => directory.current?.focus());
         } else {
           setError(t(`codebuddyCli.errors.${code}`, { defaultValue: t('codebuddyCli.errors.launchFailed') }));
         }
-      } else if (code.includes('APP_PATH_NOT_FOUND:')) {
-        // The existing application-path dialog owns path selection and retry.
-        onClose();
       } else if (onLaunchDesktop && !presentWindowsOperationError({
         error: reason,
         operation: 'launch_app',
@@ -223,14 +176,14 @@ export function CodebuddyLaunchDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        onSubmit={(event: FormEvent) => { event.preventDefault(); void run(false); }}
+        onSubmit={(event: FormEvent) => { event.preventDefault(); if (!disabled) void run(false); }}
       >
         <div className="modal-header">
           <span className="client-launch-title-icon" aria-hidden="true"><CodebuddyIcon /></span>
           <h2 id={titleId} className="client-launch-heading" title={title}>
             {title}
           </h2>
-          <button type="button" className="modal-close" onClick={() => onClose()} disabled={launching} aria-label={t('common.close')}>
+          <button type="button" className="modal-close" onClick={() => onClose()} disabled={disabled} aria-label={t('common.close')}>
             <X />
           </button>
         </div>
@@ -241,82 +194,53 @@ export function CodebuddyLaunchDialog({
             <span className={`tier-badge account-picker-plan ${planClass}`} title={plan}>{plan}</span>
           </div>
           {onLaunchDesktop && <div className="client-launch-options codebuddy-launch-modes" role="group" aria-label={t('instances.form.launchMode')}>
-            <button type="button" aria-pressed={!isCli} disabled={launching} onClick={() => selectMode('desktop')}>
+            <button type="button" aria-pressed={!isCli} disabled={disabled} onClick={() => selectMode('desktop')}>
               <Monitor size={14} aria-hidden="true" />
               <span title={t('instances.form.launchModeApp')}>{t('instances.form.launchModeApp')}</span>
             </button>
-            <button type="button" aria-pressed={isCli} disabled={launching} onClick={() => selectMode('cli')}>
+            <button type="button" aria-pressed={isCli} disabled={disabled} onClick={() => selectMode('cli')}>
               <Terminal size={14} aria-hidden="true" />
               <span>CLI</span>
             </button>
           </div>}
-          {isCli && <LaunchPathSettingsButton app="codebuddy_cli" />}
-          {isCli && cliStatus === 'checking' && (
-            <p className="codebuddy-launch-status" role="status">
-              <RefreshCw size={15} className="loading-spinner" aria-hidden="true" />
-              {t('codebuddyCli.checking')}
-            </p>
-          )}
-          {isCli && cliStatus === 'missing' && (
-            <div className="codebuddy-launch-install">
-              <p>{t('codebuddyCli.errors.cliMissing')}</p>
-              <div className="codebuddy-launch-command">
-                <code>{INSTALL_COMMAND}</code>
-                <button type="button" className="btn btn-secondary icon-only"
-                  aria-label={t(copied ? 'common.copied' : 'common.copy')}
-                  title={t(copied ? 'common.copied' : 'common.copy')}
-                  onClick={() => void copyInstallCommand()}>
-                  {copied ? <Check size={15} /> : <Copy size={15} />}
-                </button>
-              </div>
-              <div className="codebuddy-launch-install-actions">
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => void openInstallGuide()}>
-                  <ExternalLink size={14} aria-hidden="true" /> {t('codebuddyCli.installGuide')}
-                </button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={recheckCli}>
-                  <RefreshCw size={14} aria-hidden="true" /> {t('codebuddyCli.recheck')}
-                </button>
-              </div>
-            </div>
-          )}
-          {isCli && cliStatus === 'failed' && (
-            <div className="codebuddy-launch-install">
-              <p role="alert">{t('codebuddyCli.errors.cliCheckFailed')}</p>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={recheckCli}>
-                <RefreshCw size={14} aria-hidden="true" /> {t('codebuddyCli.recheck')}
-              </button>
-            </div>
-          )}
-          {isCli && cliStatus === 'available' && (
+          <PlatformLaunchPathField
+            key={pathTarget}
+            target={pathTarget}
+            disabled={disabled}
+            recovery={pathRecovery?.revision}
+            onSaving={setPathSaving}
+            onSaved={() => { if (pathRecovery) void run(pathRecovery.copy); }}
+          />
+          {isCli && (
             <div className="codebuddy-launch-cli-fields">
               <CliLaunchFields workingDir={{
                 value: workingDir, inputRef: directory,
                 placeholder: t(loadingDirectory ? 'common.loading' : 'codebuddyCli.homeDirectory'),
-                hint: t(instance ? 'instances.launchDialog.rememberDirectory' : 'codebuddyCli.rememberDirectory'),
+                hint: t('codebuddyCli.rememberDirectory'),
                 error: invalidDirectory ? t('codebuddyCli.errors.workingDirInvalid') : undefined,
                 onChange: updateDirectory, onChoose: () => void chooseDirectory(),
               }}
                 terminal={selectedTerminal} terminalOptions={terminalOptions} onTerminalChange={setSelectedTerminal}
                 customCommand={customCommand} commandPlaceholder="codebuddy"
                 onCustomCommandChange={(value) => { setCustomCommand(value); setCommandCopied(false); setError(undefined); }}
-                disabled={launching} />
+                disabled={disabled} />
             </div>
           )}
           <ModalErrorMessage
-            message={error ?? (isCli && cliStatus === 'available' && directoryReadFailed
+            message={error ?? (isCli && directoryReadFailed
               ? t('codebuddyCli.errors.storageError')
               : undefined)}
             position="bottom"
           />
         </div>
         <div className="modal-footer">
-          <button type="button" className="btn btn-secondary" onClick={() => onClose()} disabled={launching}>{t('common.cancel')}</button>
-          {isCli && cliStatus === 'available' && <button type="button" className="btn btn-secondary" disabled={launching || cliBlocked}
+          <button type="button" className="btn btn-secondary" onClick={() => onClose()} disabled={disabled}>{t('common.cancel')}</button>
+          {isCli && <button type="button" className="btn btn-secondary" disabled={disabled || directoryPending}
             onClick={() => void run(true)}>
             {commandCopied ? <Check size={16} /> : <Copy size={16} />}
             {t(commandCopied ? 'common.copied' : 'common.copy')}
           </button>}
-          <button type="submit" className="btn btn-primary" disabled={launching || cliBlocked}>
+          <button type="submit" className="btn btn-primary" disabled={disabled || directoryPending}>
             {launching ? <RefreshCw size={16} className="loading-spinner" /> : <LaunchIcon size={16} />}
             {launching ? t('common.loading') : launchLabel}
           </button>

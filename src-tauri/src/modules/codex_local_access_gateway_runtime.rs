@@ -245,6 +245,7 @@ async fn stop_gateway_locked_checked(
             endpoint,
         )
     };
+    crate::modules::ssh_server::close_api_service_tunnels();
 
     if endpoint.is_some() || child.is_some() || task.is_some() {
         logger::log_codex_api_info(&format!(
@@ -710,6 +711,7 @@ struct RequestStatsMeta<'a> {
     upstream_model: Option<&'a str>,
     first_response_ms: Option<u64>,
     output_generation_ms: Option<u64>,
+    input_text_characters: Option<u64>,
 }
 
 async fn record_request_stats_with_meta(
@@ -739,11 +741,12 @@ async fn record_request_stats_with_meta(
         let mut runtime = gateway_runtime().lock().await;
         let now = now_ms();
         let usage_ref = usage.as_ref();
-        let pricing = resolve_effective_model_pricing(
+        let pricing = resolve_effective_model_pricing_at(
             runtime.collection.as_ref(),
             model_id,
             usage_ref,
             meta.service_tier,
+            now,
         );
         let model_pricing_version = runtime
             .collection
@@ -865,11 +868,13 @@ async fn record_request_stats_with_meta(
         event.requested_service_tier = recorded_service_tier_value(meta.requested_service_tier);
         event.response_service_tier = recorded_service_tier_value(meta.response_service_tier);
         event.output_generation_ms = meta.output_generation_ms;
+        event.input_text_characters = meta.input_text_characters;
         event.first_response_ms = meta.first_response_ms.or(event.first_response_ms);
         if let Some(recent) = runtime.stats.events.last_mut() {
             recent.connection_source = event.connection_source;
             recent.first_response_ms = event.first_response_ms;
             recent.output_generation_ms = event.output_generation_ms;
+            recent.input_text_characters = event.input_text_characters;
             recent.authorization_route = event.authorization_route.clone();
             recent.requested_service_tier = event.requested_service_tier.clone();
             recent.response_service_tier = event.response_service_tier.clone();
@@ -1113,6 +1118,101 @@ pub(crate) async fn bound_oauth_account_id_for_instance_start() -> Result<Option
     Ok(Some(account.id))
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SshApiService {
+    pub(crate) port: u16,
+    api_key: String,
+    supports_websockets: bool,
+    catalog_modified: Option<std::time::SystemTime>,
+}
+
+impl SshApiService {
+    pub(crate) fn remote_account(&self, remote_port: u16) -> CodexAccount {
+        let mut account = build_runtime_account(
+            build_base_url_with_host(remote_port, CodexLocalAccessClientBaseUrlHost::Ipv4Loopback),
+            self.api_key.clone(),
+            None,
+            self.supports_websockets,
+        );
+        account.email = CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME.into();
+        account
+    }
+}
+
+pub(crate) async fn running_api_service_for_ssh() -> Option<SshApiService> {
+    let runtime = gateway_runtime().lock().await;
+    let collection = runtime.collection.as_ref()?;
+    let handle = runtime.native_handle.as_ref()?;
+    if !local_access_gateway_should_run(collection)
+        || !runtime.running
+        || handle.is_finished()
+        || handle.addr.port() != collection.port
+    {
+        return None;
+    }
+    let mut service = SshApiService {
+        port: collection.port,
+        api_key: collection.api_key.clone(),
+        supports_websockets: profile_api_key_supports_websockets(collection, &collection.api_key),
+        catalog_modified: None,
+    };
+    drop(runtime);
+    service.catalog_modified = std::fs::metadata(api_service_ssh_catalog_path())
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    Some(service)
+}
+
+fn api_service_ssh_catalog_path() -> PathBuf {
+    codex_account::get_codex_home().join(CODEX_MANAGED_MODEL_CATALOG_FILE)
+}
+
+pub(crate) fn api_service_model_catalog_for_ssh() -> Result<Option<String>, String> {
+    read_optional_profile_file(&api_service_ssh_catalog_path())
+}
+
+#[cfg(test)]
+#[test]
+fn ssh_api_service_bundle_uses_remote_port_and_keeps_unrelated_settings() {
+    let service = SshApiService {
+        port: 9000,
+        api_key: "sk-fixture-service".into(),
+        supports_websockets: true,
+        catalog_modified: None,
+    };
+    let account = service.remote_account(45000);
+    let catalog = r#"{"models":[]}"#;
+    let bundle = codex_account::build_projection_bundle_for_remote(
+        &account,
+        Some(r#"
+cli_auth_credentials_store = "ephemeral"
+
+[features]
+web_search = true
+
+[model_providers.codex_local_access]
+env_key = "STALE_KEY"
+"#),
+        Some(catalog),
+    ).expect("build a projection portable across hosts");
+    let file = |name| bundle.files.iter().find(|file| file.relative_path == name).unwrap();
+    let config = crate::modules::codex_config_format::read_codex_config_doc_from_str(
+        &file("config.toml").content,
+    ).unwrap();
+    assert_eq!(config["model_provider"].as_str(), Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID));
+    let provider = &config["model_providers"][CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID];
+    assert_eq!(provider["base_url"].as_str(), Some("http://127.0.0.1:45000/v1"));
+    assert_eq!(provider["wire_api"].as_str(), Some("responses"));
+    assert!(provider.get("env_key").is_none());
+    assert_eq!(config["cli_auth_credentials_store"].as_str(), Some("file"));
+    assert_eq!(config["features"]["web_search"].as_bool(), Some(true));
+    assert_eq!(config["model_catalog_json"].as_str(), Some(CODEX_MANAGED_MODEL_CATALOG_FILE));
+    assert_eq!(file(CODEX_MANAGED_MODEL_CATALOG_FILE).content, catalog);
+    let auth: Value = serde_json::from_str(&file("auth.json").content).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-fixture-service");
+    assert!(bundle.files.iter().all(|file| file.mode == 0o600));
+}
+
 pub async fn activate_local_access_for_dir(
     profile_dir: &Path,
 ) -> Result<CodexLocalAccessState, String> {
@@ -1125,6 +1225,7 @@ pub async fn activate_local_access_for_dir(
             .map(|collection| collection.api_key.clone())
             .ok_or_else(|| "API 服务集合尚未创建".to_string())?
     };
+    cleanup_provider_gateway_profile_model_overrides(profile_dir)?;
     save_profile_takeover_backup(profile_dir, &api_key)?;
     let state = set_local_access_enabled(true).await?;
     let collection = state
@@ -1133,6 +1234,15 @@ pub async fn activate_local_access_for_dir(
         .ok_or_else(|| "API 服务集合尚未创建".to_string())?;
     write_local_access_profile_takeover(profile_dir, &collection, None, true).await?;
     Ok(state)
+}
+
+pub(crate) async fn running_api_service_connection() -> Option<(String, String)> {
+    let runtime = gateway_runtime().lock().await;
+    let collection = runtime.collection.as_ref()?;
+    if !runtime.running || !collection.enabled || runtime.actual_port != Some(collection.port) {
+        return None;
+    }
+    Some((build_collection_base_url(collection), collection.api_key.clone()))
 }
 
 pub async fn prepare_local_access_for_bound_profile_dir(
@@ -1155,6 +1265,7 @@ pub async fn prepare_local_access_for_bound_profile_dir(
     ensure_gateway_matches_runtime().await?;
     // This path is an explicit launch of an API Service-bound instance, not
     // background reconciliation. It may reacquire the selected profile.
+    cleanup_provider_gateway_profile_model_overrides(profile_dir)?;
     save_profile_takeover_backup(profile_dir, &collection.api_key)?;
     write_local_access_profile_takeover(profile_dir, &collection, None, true).await?;
     Ok(true)
@@ -1166,6 +1277,8 @@ fn new_empty_local_access_collection() -> Result<CodexLocalAccessCollection, Str
         port: allocate_initial_local_port(CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST)?,
         api_key: generate_local_api_key(),
         api_keys: Vec::new(),
+        account_pools: Vec::new(),
+        account_pool_revision: 0,
         access_scope: CodexLocalAccessScope::Localhost,
         client_base_url_host: CodexLocalAccessClientBaseUrlHost::default(),
         image_generation_mode: CodexLocalAccessImageGenerationMode::default(),
@@ -1192,6 +1305,7 @@ fn new_empty_local_access_collection() -> Result<CodexLocalAccessCollection, Str
         routing_strategy: CodexLocalAccessRoutingStrategy::default(),
         custom_routing_rules: Vec::new(),
         account_model_rules: Vec::new(),
+        account_quota_floors: HashMap::new(),
         model_aliases: Vec::new(),
         custom_models: Vec::new(),
         suppress_oauth_model_alias: false,

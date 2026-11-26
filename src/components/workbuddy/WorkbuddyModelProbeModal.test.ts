@@ -10,6 +10,7 @@ function nodes(value: any): any[] {
 test('batch probe submits once and keeps cleanup failures visible in the cell detail', async () => {
   const probe = deferred<any>();
   let calls = 0;
+  const probedModels: string[] = [];
   let closed = 0;
   const h = loadHookModule(new URL('./WorkbuddyModelProbeModal.tsx', import.meta.url), {
     'react-i18next': { useTranslation: () => ({ t: (key: string) => key }) },
@@ -21,7 +22,11 @@ test('batch probe submits once and keeps cleanup failures visible in the cell de
         { id: 'chosen', name: 'Chosen', credits: null, description: null, supportsImages: false, isDefault: false },
       ],
       fetchCodebuddyCnCloudModels: async () => [],
-      probeWorkbuddyModel: () => { calls++; return probe.promise; },
+      probeWorkbuddyModel: (_accountId: string, model: string) => {
+        calls++;
+        probedModels.push(model);
+        return probe.promise;
+      },
       probeCodebuddyCnModel: () => { throw new Error('unused'); },
     },
     '../../utils/workbuddyProbeStatus': {
@@ -31,14 +36,20 @@ test('batch probe submits once and keeps cleanup failures visible in the cell de
       dismissWorkbuddyProbeRecord() {},
       subscribeWorkbuddyProbeStatus: () => () => {},
     },
-  });
+  }, { localStorage: { getItem: () => '["retired"]', setItem() {} } });
+
+  const submitButton = () => nodes(h.flush()).find(
+    (node) => node.type === 'button' && node.props.className === 'btn btn-primary',
+  );
 
   h.render(() => h.exports.WorkbuddyModelProbeModal({
     accounts: [{ id: 'a', email: 'a@example.invalid' }],
     currentAccountId: 'a',
     onClose: () => { closed++; },
   }));
+  assert.equal(submitButton().props.disabled, true);
   await settlePromises();
+  assert.equal(submitButton().props.disabled, true);
 
   // 勾选模型目录里的第一个模型
   const modelLabel = nodes(h.flush()).find((node) => node.props?.className === 'wb-probe-model-item');
@@ -46,16 +57,15 @@ test('batch probe submits once and keeps cleanup failures visible in the cell de
   const modelCheckbox = modelLabel.props.children.find((child: any) => child?.type === 'input');
   modelCheckbox.props.onChange({ target: { checked: true } });
 
-  const submit = nodes(h.flush()).find(
-    (node) => node.type === 'button' && node.props.className === 'btn btn-primary',
-  );
+  const submit = submitButton();
   assert.equal(submit.props.disabled, false);
   submit.props.onClick();
   submit.props.onClick();
   assert.equal(calls, 1);
+  assert.deepEqual(probedModels, ['chosen']);
 
   // 弹层点击背景不关闭（仅显式关闭）
-  assert.equal(nodes(h.flush()).find((node) => node.props.className === 'modal-overlay').props.onClick, undefined);
+  assert.equal(nodes(h.flush()).find((node) => node.props.className === 'modal-overlay wb-probe-overlay').props.onClick, undefined);
 
   probe.resolve({
     status: 'available',
@@ -68,21 +78,27 @@ test('batch probe submits once and keeps cleanup failures visible in the cell de
   });
   await settlePromises();
 
-  // 打开单元格详情，确认「已保留 / 清理失败」都可见
-  const cell = nodes(h.flush()).find(
-    (node) => typeof node.props?.className === 'string' && node.props.className.startsWith('wb-probe-cell'),
-  );
-  assert.ok(cell, 'result cell should render');
-  cell.props.onClick();
   const detail = nodes(h.flush());
+  assert.ok(detail.some((node) => node.props.className === 'wb-probe-reply' && node.props.children === 'OK'));
+  assert.ok(!detail.some((node) => node.props.className === 'wb-probe-model-list'));
   assert.ok(detail.some((node) => node.props.children === 'workbuddy.modelProbe.retained'));
   assert.ok(!detail.some((node) => node.props.children === 'workbuddy.modelProbe.deleted'));
   assert.ok(detail.some((node) => Array.isArray(node.props.children) && node.props.children.includes('workbuddy.modelProbe.cleanupFailed')));
 
-  const cancel = nodes(h.flush()).find(
+  const backToResults = detail.find((node) => node.props.className === 'wb-probe-quiet');
+  backToResults.props.onClick();
+  const cell = nodes(h.flush()).find(
+    (node) => node.type === 'button' && node.props.className === 'wb-probe-cell ok',
+  );
+  assert.ok(cell, 'returning to the matrix should retain the result');
+  cell.props.onClick();
+  assert.ok(nodes(h.flush()).some((node) => node.props.className === 'wb-probe-reply'));
+
+  const backToSetup = nodes(h.flush()).find(
     (node) => node.type === 'button' && node.props.className === 'btn btn-secondary',
   );
-  cancel.props.onClick();
-  assert.equal(closed, 1);
+  backToSetup.props.onClick();
+  assert.ok(nodes(h.flush()).some((node) => node.props.className === 'wb-probe-model-list'));
+  assert.equal(closed, 0);
   h.unmount();
 });

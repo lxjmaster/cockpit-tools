@@ -40,13 +40,13 @@ fn native_automatic_account_model(
     collection: &CodexLocalAccessCollection,
     account: &CodexAccount,
     model: &str,
+    codex_catalog: &NativeRouteCodexCatalog,
 ) -> Option<String> {
     // Hidden native models remain routable even though they are not all shown
     // in the catalog. The shared slots enforce custom overrides and opt-outs.
-    let mut fallback = api_service_supported_codex_model_ids();
-    fallback.extend(api_service_routable_codex_model_ids());
+    let mut fallback = codex_catalog.routable().to_vec();
     fallback.push(CODEX_GPT_RESERVE_MODEL_ID.into());
-    automatic_api_service_route_models(collection, account, &fallback)
+    automatic_api_service_route_models_with_catalog(collection, account, &fallback, codex_catalog)
         .into_iter()
         .find(|entry| {
             entry["clientModel"]
@@ -219,7 +219,7 @@ fn native_plan_vision_model(
     } else if plan.automatic
         && automatic_api_service_provider_route_eligible(
             account,
-            &native_automatic_upstream_models(collection, account),
+            || native_automatic_upstream_models(collection, account),
         )
         && !native_account_model_vision(account, model)
     {
@@ -245,7 +245,7 @@ fn native_catalog_vision(
         return native_account_model_vision(account, upstream)
             || (automatic_api_service_provider_route_eligible(
                 account,
-                &native_automatic_upstream_models(collection, account),
+                || native_automatic_upstream_models(collection, account),
             ) && native_automatic_vision_fallback(collection, account).is_some());
     }
     account
@@ -289,7 +289,7 @@ fn native_prepare_provider_vision_body(
     } else if key.is_none_or(|key| key.model_routing.is_none() && key.provider_gateway.is_none())
         && automatic_api_service_provider_route_eligible(
             account,
-            &native_automatic_upstream_models(collection, account),
+            || native_automatic_upstream_models(collection, account),
         )
     {
         !native_account_model_vision(account, model)

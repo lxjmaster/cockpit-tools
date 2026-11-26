@@ -395,6 +395,13 @@ html[data-reduced-motion="true"] .codex-accounts-grid .codex-account-card[data-c
   line-height: 1;
 }
 
+.codex-accounts-page .codex-account-wakeup-result {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .codex-accounts-page .codex-status-pill.quota-error {
   background: rgba(239, 68, 68, 0.12);
   color: #b91c1c;
@@ -1660,6 +1667,43 @@ html[data-reduced-motion="true"] .codex-accounts-grid .codex-account-card[data-c
   white-space: nowrap;
 }
 
+.codex-account-refresh-status {
+  min-width: 0;
+  contain: inline-size;
+}
+
+.codex-account-refresh-status:empty {
+  position: absolute;
+}
+
+.codex-account-card .codex-card-bottom > .codex-account-refresh-status {
+  grid-column: 1 / -1;
+}
+
+.codex-account-refresh-feedback {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.codex-account-refresh-feedback > svg {
+  flex: none;
+  color: var(--success);
+}
+
+.codex-account-refresh-feedback.error > svg {
+  color: var(--danger);
+}
+
+.codex-account-refresh-feedback-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 卡片底部 */
 .codex-account-card .codex-card-bottom {
   margin-top: auto;
@@ -2367,21 +2411,51 @@ html[data-reduced-motion="true"] .codex-accounts-grid .codex-account-card[data-c
   padding: 6px 4px;
 }
 
-.codex-accounts-page .tag-filter-clear {
+.codex-accounts-page .tag-filter-actions {
   margin-top: 10px;
-  width: 100%;
-  border: none;
-  background: rgba(15, 23, 42, 0.06);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.codex-accounts-page .tag-filter-action-btn,
+.codex-accounts-page .tag-filter-clear {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
   color: var(--text-secondary);
   font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
   padding: 6px 8px;
   border-radius: 8px;
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.codex-accounts-page .tag-filter-clear:hover {
-  background: rgba(15, 23, 42, 0.12);
+.codex-accounts-page .tag-filter-action-btn:hover:not(:disabled),
+.codex-accounts-page .tag-filter-clear:hover:not(:disabled) {
+  background: var(--bg-hover, var(--bg-secondary));
   color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+}
+
+.codex-accounts-page .tag-filter-action-btn:disabled,
+.codex-accounts-page .tag-filter-clear:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.codex-accounts-page .tag-filter-panel > .tag-filter-clear {
+  margin-top: 10px;
+  width: 100%;
 }
 
 .codex-accounts-page .tag-group-list {

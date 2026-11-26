@@ -134,6 +134,10 @@ pub struct GeneralConfig {
     pub qoder_auto_refresh_minutes: i32,
     /// ZCode 自动刷新间隔（分钟），-1 表示禁用
     pub zcode_auto_refresh_minutes: i32,
+    /// T3 Code 自动刷新间隔（分钟），-1 表示禁用
+    pub t3code_auto_refresh_minutes: i32,
+    /// 是否启用 T3 Code 聊天底部 Composer 栏常驻胶囊注入
+    pub t3code_app_ui_injection_enabled: bool,
     /// Trae 自动刷新间隔（分钟），-1 表示禁用
     pub trae_auto_refresh_minutes: i32,
     pub trae_solo_auto_refresh_minutes: i32,
@@ -148,8 +152,10 @@ pub struct GeneralConfig {
     pub show_tray_icon: bool,
     /// 菜单栏图标样式（macOS）: "template", "color"
     pub tray_icon_style: String,
+    pub menu_bar_left_click_opens_main_window: bool,
     /// 是否在 macOS 菜单栏显示当前账号剩余额度
     pub menu_bar_quota_enabled: bool,
+    pub menu_bar_quota_layout: String,
     /// 是否显示账号标识前 4 位
     pub menu_bar_show_account_prefix: bool,
     /// 菜单栏额度监控平台
@@ -196,6 +202,7 @@ pub struct GeneralConfig {
     pub claude_app_path: String,
     /// Claude 桌面应用扫描范围（每行一个目录）
     pub claude_app_scan_roots: String,
+    pub claude_share_code_sessions_on_switch: bool,
     /// 切换 Codex 后需联动重启的指定应用路径
     pub codex_specified_app_path: String,
     /// Zed 启动路径（为空则使用默认路径）
@@ -220,6 +227,8 @@ pub struct GeneralConfig {
     pub qoder_app_path: String,
     /// ZCode 启动路径（为空则使用默认路径）
     pub zcode_app_path: String,
+    /// T3 Code 启动路径（为空则使用默认路径）
+    pub t3code_app_path: String,
     /// Trae 启动路径（为空则使用默认路径）
     pub trae_app_path: String,
     /// Trae Windows 应用扫描范围（每行一个目录）
@@ -258,6 +267,8 @@ pub struct GeneralConfig {
     pub hermes_auth_overwrite_on_switch: bool,
     /// 切换 Codex 时是否自动启动/重启 Codex App
     pub codex_launch_on_switch: bool,
+    pub codex_automatic_session_repair: config::CodexAutomaticSessionRepair,
+    pub codex_cli_auto_refresh_on_switch: bool,
     pub codex_auto_restore_takeover_on_launch: bool,
     /// 切换 Antigravity IDE 时是否自动启动/重启应用
     pub antigravity_launch_on_switch: bool,
@@ -535,6 +546,10 @@ fn read_macos_plist_string(path: &Path, key: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(any(target_os = "linux", test))]
+#[path = "antigravity_linux_asar.rs"]
+mod antigravity_linux_asar;
 
 fn antigravity_product_json_candidates(root: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -824,10 +839,15 @@ fn normalize_antigravity_metadata_root(path: &Path) -> Option<PathBuf> {
 }
 
 fn push_unique_antigravity_candidate(candidates: &mut Vec<PathBuf>, path: PathBuf) {
-    let normalized_key = path.to_string_lossy().to_ascii_lowercase();
-    let exists = candidates
-        .iter()
-        .any(|item| item.to_string_lossy().to_ascii_lowercase() == normalized_key);
+    #[cfg(target_os = "linux")]
+    let exists = candidates.contains(&path);
+    #[cfg(not(target_os = "linux"))]
+    let exists = {
+        let normalized_key = path.to_string_lossy().to_ascii_lowercase();
+        candidates
+            .iter()
+            .any(|item| item.to_string_lossy().to_ascii_lowercase() == normalized_key)
+    };
     if !exists {
         candidates.push(path);
     }
@@ -975,12 +995,13 @@ fn antigravity_metadata_candidates(
     #[cfg(target_os = "linux")]
     {
         let paths: &[&str] = match normalize_antigravity_metadata_target(target) {
-            Some("antigravity") => &["/usr/share/antigravity", "/opt/antigravity"],
+            Some("antigravity") => &["/usr/share/antigravity", "/opt/antigravity", "/opt/Antigravity"],
             Some("antigravity_ide") => &["/usr/share/antigravity-ide", "/opt/antigravity-ide"],
             _ => &[
                 "/usr/share/antigravity",
                 "/usr/share/antigravity-ide",
                 "/opt/antigravity",
+                "/opt/Antigravity",
                 "/opt/antigravity-ide",
             ],
         };
@@ -1115,6 +1136,19 @@ fn resolve_antigravity_installed_version_info_for_target_with_mode(
             return Some(info);
         }
 
+        #[cfg(target_os = "linux")]
+        if normalize_antigravity_metadata_target(target) != Some("antigravity_ide") {
+            let archive = root.join("resources").join("app.asar");
+            if let Some(version) = antigravity_linux_asar::desktop_version_from_asar(&archive) {
+                return Some(AntigravityInstalledVersionInfo {
+                    product_name: "Antigravity".to_string(),
+                    version,
+                    app_path: root.to_string_lossy().to_string(),
+                    source: "app.asar/package.json".to_string(),
+                });
+            }
+        }
+
         #[cfg(target_os = "macos")]
         if let Some(info) = read_antigravity_macos_bundle_metadata(&root) {
             return Some(info);
@@ -1240,6 +1274,8 @@ fn is_general_config_patch_field(key: &str) -> bool {
             | "minimax_code_auto_refresh_minutes"
             | "qoder_auto_refresh_minutes"
             | "zcode_auto_refresh_minutes"
+            | "t3code_auto_refresh_minutes"
+            | "t3code_app_ui_injection_enabled"
             | "trae_auto_refresh_minutes"
             | "trae_solo_auto_refresh_minutes"
             | "trae_cn_auto_refresh_minutes"
@@ -1249,7 +1285,9 @@ fn is_general_config_patch_field(key: &str) -> bool {
             | "hide_dock_icon"
             | "show_tray_icon"
             | "tray_icon_style"
+            | "menu_bar_left_click_opens_main_window"
             | "menu_bar_quota_enabled"
+            | "menu_bar_quota_layout"
             | "menu_bar_show_account_prefix"
             | "menu_bar_quota_platform"
             | "menu_bar_antigravity_metric"
@@ -1275,6 +1313,7 @@ fn is_general_config_patch_field(key: &str) -> bool {
             | "codex_oauth_app_version"
             | "claude_app_path"
             | "claude_app_scan_roots"
+            | "claude_share_code_sessions_on_switch"
             | "codex_specified_app_path"
             | "zed_app_path"
             | "vscode_app_path"
@@ -1287,6 +1326,7 @@ fn is_general_config_patch_field(key: &str) -> bool {
             | "codebuddy_cn_share_sessions_on_switch"
             | "qoder_app_path"
             | "zcode_app_path"
+            | "t3code_app_path"
             | "trae_app_path"
             | "trae_solo_app_path"
             | "trae_cn_app_path"
@@ -1311,6 +1351,8 @@ fn is_general_config_patch_field(key: &str) -> bool {
             | "openclaw_auth_overwrite_on_switch"
             | "hermes_auth_overwrite_on_switch"
             | "codex_launch_on_switch"
+            | "codex_automatic_session_repair"
+            | "codex_cli_auto_refresh_on_switch"
             | "codex_auto_restore_takeover_on_launch"
             | "antigravity_launch_on_switch"
             | "codex_restart_specified_app_on_switch"
@@ -1434,6 +1476,13 @@ fn apply_general_config_updates(
     if updates.contains_key("theme_color") {
         next.theme_color = config::normalize_theme_color(&next.theme_color);
     }
+    if updates.contains_key("menu_bar_quota_layout") {
+        next.menu_bar_quota_layout = match next.menu_bar_quota_layout.trim() {
+            "stacked" => "stacked",
+            _ => "horizontal",
+        }
+        .to_string();
+    }
     if updates.contains_key("menu_bar_quota_platform") {
         let platform = next.menu_bar_quota_platform.trim();
         next.menu_bar_quota_platform = if platform == config::MENU_BAR_QUOTA_CLAUDE_CLI {
@@ -1488,6 +1537,7 @@ fn apply_general_config_updates(
     normalize_app_path_field!("codebuddy_cn_app_path", codebuddy_cn_app_path);
     normalize_app_path_field!("qoder_app_path", qoder_app_path);
     normalize_app_path_field!("zcode_app_path", zcode_app_path);
+    normalize_app_path_field!("t3code_app_path", t3code_app_path);
     normalize_app_path_field!("trae_app_path", trae_app_path);
     normalize_app_path_field!("trae_solo_app_path", trae_solo_app_path);
     normalize_app_path_field!("trae_cn_app_path", trae_cn_app_path);
@@ -1497,6 +1547,15 @@ fn apply_general_config_updates(
     trim_string_field!("trae_cn_app_scan_roots", trae_cn_app_scan_roots);
     trim_string_field!("trae_solo_cn_app_scan_roots", trae_solo_cn_app_scan_roots);
     normalize_app_path_field!("workbuddy_app_path", workbuddy_app_path);
+    #[cfg(target_os = "windows")]
+    if updates.contains_key("workbuddy_app_path")
+        && next.workbuddy_app_path != current.workbuddy_app_path
+    {
+        modules::process::validate_workbuddy_app_path(std::path::Path::new(&next.workbuddy_app_path))
+            .map_err(|error| {
+                modules::process::format_workbuddy_app_path_error(error, &next.language)
+            })?;
+    }
     normalize_app_path_field!("minimax_code_app_path", minimax_code_app_path);
 
     if updates.contains_key("auto_switch_scope_mode") {

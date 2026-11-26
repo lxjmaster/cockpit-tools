@@ -19,8 +19,17 @@ pub fn delete_zcode_accounts(account_ids: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn import_zcode_from_json(json_content: String) -> Result<Vec<ZcodeAccount>, String> {
-    zcode_account::import_from_json(&json_content)
+pub async fn import_zcode_from_json(json_content: String) -> Result<Vec<ZcodeAccount>, String> {
+    tokio::task::spawn_blocking(move || zcode_account::import_from_json(&json_content, None))
+        .await
+        .map_err(|_| "导入 ZCode 账号失败".to_string())?
+}
+
+#[tauri::command]
+pub async fn import_zcode_from_file(path: String) -> Result<Vec<ZcodeAccount>, String> {
+    tokio::task::spawn_blocking(move || zcode_account::import_from_file(std::path::Path::new(&path)))
+        .await
+        .map_err(|_| "导入 ZCode 文件失败".to_string())?
 }
 
 #[tauri::command]
@@ -104,6 +113,10 @@ pub async fn refresh_all_zcode_accounts(app: AppHandle) -> Result<i32, String> {
 
 #[tauri::command]
 pub fn inject_zcode_account(app: AppHandle, account_id: String) -> Result<String, String> {
+    switch_zcode(app, account_id, false)
+}
+
+pub(crate) fn switch_zcode(app: AppHandle, account_id: String, report_launch_failure: bool) -> Result<String, String> {
     if let Err(error) = zcode_instance::resolve_executable() {
         if error == "APP_PATH_NOT_FOUND:zcode" {
             let _ = app.emit("app:path_missing", serde_json::json!({
@@ -130,6 +143,9 @@ pub fn inject_zcode_account(app: AppHandle, account_id: String) -> Result<String
             let _ = app.emit("app:path_missing", serde_json::json!({
                 "app": "zcode", "retry": { "kind": "launchOnly" }
             }));
+            if report_launch_failure {
+                return Err("APP_PATH_MISSING_AFTER_SWITCH:zcode".into());
+            }
         }
         Err(error) => {
             return Err(format!("ZCode 账号已切换，但默认实例启动失败: {error}"));

@@ -1,4 +1,5 @@
 pub mod account;
+pub mod automation_protocol;
 mod account_file_crypto;
 mod secure_account_storage;
 pub mod account_index_repair;
@@ -35,6 +36,7 @@ pub mod github_copilot_instance;
 pub mod github_copilot_oauth;
 // pub mod group_settings;
 pub mod i18n;
+#[cfg(feature = "desktop")]
 pub mod import;
 pub mod instance;
 pub(crate) mod instance_registry;
@@ -60,6 +62,8 @@ pub mod oauth_pending_state;
 // pub mod opencode_auth;
 pub mod process;
 pub mod qoder_account;
+pub mod qoder_cn_account;
+mod qoder_channel;
 mod qoder_identity;
 pub mod qoder_instance;
 pub mod qoder_oauth;

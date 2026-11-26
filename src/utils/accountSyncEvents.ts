@@ -39,6 +39,7 @@ const PROVIDER_PAGE_PLATFORM_MAP: Record<string, PlatformId> = {
   codebuddy_cn: 'codebuddy_cn',
   qoder: 'qoder',
   zcode: 'zcode',
+  t3code: 't3code',
   trae: 'trae',
   trae_solo: 'trae_solo',
   traesolo: 'trae_solo',
@@ -116,6 +117,7 @@ export function resolvePlatformIdFromPage(page: Page | string): PlatformId | nul
     normalized === 'api-relay' ||
     normalized === 'wakeup' ||
     normalized === 'verification' ||
+    normalized === 'antigravity-usage' ||
     normalized === '2fa' ||
     normalized === 'proxies' ||
     normalized === 'instances'

@@ -28,10 +28,10 @@ fn official_authorization_account_model_mapping_preserves_upstream_catalog_scope
     let collection = collection();
     let plan = |model| native_model_route_plan(&collection, None, model).unwrap();
     assert_eq!(
-        native_plan_account_model(&plan("official-alias"), &account).as_deref(),
+        native_plan_account_model(&collection, &plan("official-alias"), &account).as_deref(),
         Some("gpt-account-exclusive")
     );
-    assert_eq!(native_plan_account_model(&plan("ungranted-alias"), &account), None);
+    assert_eq!(native_plan_account_model(&collection, &plan("ungranted-alias"), &account), None);
 }
 
 fn mixed_oauth_host(projection: CodexAccount, scope: Vec<String>) -> NativeHostBridge {

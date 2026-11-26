@@ -23,7 +23,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -75,12 +75,19 @@ fn completion(id: &str) -> Value {
 struct Upstream {
     sent: Mutex<Vec<(HeaderMap, Value)>>,
     next_output: Mutex<Option<Vec<Value>>>,
+    /// Consumed once: delays the next forwarded request so a test can cancel it
+    /// deterministically mid-flight while sibling requests proceed.
+    delay: Mutex<Option<std::time::Duration>>,
 }
 async fn upstream(
     State(state): State<Arc<Upstream>>,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
+    let delay = state.delay.lock().unwrap().take();
+    if let Some(delay) = delay {
+        tokio::time::sleep(delay).await;
+    }
     let body = serde_json::from_slice(&bytes).unwrap();
     let mut sent = state.sent.lock().unwrap();
     sent.push((headers, body));
@@ -121,6 +128,8 @@ struct TestHost {
     base: String,
     oauth: bool,
     removed_a: AtomicBool,
+    open_timeout: std::time::Duration,
+    rejections: Mutex<Vec<RequestReport>>,
 }
 impl Host for TestHost {
     fn authorize<'a>(&'a self, credential: &'a str) -> BoxFuture<'a, Result<Caller, ServiceError>> {
@@ -195,6 +204,7 @@ impl Host for TestHost {
         Box::pin(async {
             Ok(ExecutionPolicy {
                 credential_retries: 1,
+                open_timeout: self.open_timeout,
                 ..Default::default()
             })
         })
@@ -212,6 +222,11 @@ impl Host for TestHost {
     fn record(&self, _: RequestReport) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
+    fn record_rejection(&self, report: RequestReport) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.rejections.lock().unwrap().push(report);
+        })
+    }
 }
 struct Fixture {
     root: tempfile::TempDir,
@@ -222,6 +237,10 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(oauth: bool) -> Self {
+        Self::with_open_timeout(oauth, ExecutionPolicy::default().open_timeout).await
+    }
+
+    async fn with_open_timeout(oauth: bool, open_timeout: std::time::Duration) -> Self {
         let source = Arc::new(Upstream::default());
         let app = Router::new()
             .route("/responses", post(upstream).get(websocket))
@@ -232,6 +251,8 @@ impl Fixture {
             base: format!("http://{}", listener.local_addr().unwrap()),
             oauth,
             removed_a: AtomicBool::new(false),
+            open_timeout,
+            rejections: Mutex::new(Vec::new()),
         });
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let mut result = Self {
@@ -322,8 +343,198 @@ fn append(mut input: Value, items: impl IntoIterator<Item = Value>) -> Value {
     input
 }
 fn checkpoint(path: &Path, id: &str) -> Value {
-    let raw:String=Connection::open(path).unwrap().query_row("SELECT transcript FROM native_rebuild_checkpoints_v1 WHERE caller='caller' AND response=?1",[id],|r|r.get(0)).unwrap();
-    serde_json::from_str(&raw).unwrap()
+    let raw: String = Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT transcript FROM native_rebuild_checkpoints_v1 WHERE caller='caller' AND response=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let decoded = super::identity::rebuild::checkpoint_store::decode_text(&raw).unwrap();
+    serde_json::from_str(&decoded).unwrap()
+}
+
+#[tokio::test]
+async fn state_operation_timeout_records_authenticated_local_rejection() {
+    use std::time::Duration;
+
+    let fixture = Fixture::with_open_timeout(true, Duration::from_secs(1)).await;
+    let lock = Connection::open(fixture.path()).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let response = fixture
+        .send(&request(json!([message("user", &"x".repeat(550_000))])), "caller")
+        .await;
+    lock.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(response.status(), 503);
+    let error: Value = response.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "blocking_operation_timeout");
+    assert!(fixture.sent().is_empty());
+
+    let report = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(report) = fixture.host.rejections.lock().unwrap().pop() {
+                break report;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a local rejection must be recorded");
+    assert_eq!(report.status, 503);
+    assert_eq!(report.error.as_deref(), Some("blocking_operation_timeout"));
+    assert_eq!(report.caller.id, "caller");
+    assert!(report.account_id.is_empty() && report.usage.is_none());
+    assert!(report.diagnostics.is_some());
+    fixture.finish().await;
+}
+
+fn state_fixture_text(mut seed: u64, bytes: usize) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let text = (0..bytes)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ALPHABET[(seed & 63) as usize]
+        })
+        .collect();
+    String::from_utf8(text).unwrap()
+}
+
+fn seed_large_identity_store(path: &Path) {
+    use rusqlite::params;
+    use sha2::{Digest, Sha256};
+
+    let mut connection = Connection::open(path).unwrap();
+    let transaction = connection.transaction().unwrap();
+    let mut digests = Vec::new();
+    {
+        let mut insert = transaction
+            .prepare("INSERT INTO native_rebuild_items_v1(caller,digest,body) VALUES('caller',?1,?2)")
+            .unwrap();
+        for index in 1..=42_211u64 {
+            let raw = serde_json::to_vec(&message("user", &state_fixture_text(index, 9_400)))
+                .unwrap();
+            let digest = format!("{:x}", Sha256::digest(&raw));
+            let body = zstd::stream::encode_all(raw.as_slice(), 1).unwrap();
+            insert.execute(params![digest, body]).unwrap();
+            digests.push(digest);
+        }
+    }
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO native_rebuild_history_v1(caller,response,thread,account,generation,manifest)
+                 VALUES('caller',?1,?2,'a','seed-generation',?3)",
+            )
+            .unwrap();
+        for index in 0..7_054usize {
+            let start = (index * 5) % (digests.len() - 248);
+            let manifest = serde_json::to_string(&digests[start..start + 248]).unwrap();
+            insert
+                .execute(params![format!("seed-{index}"), format!("seed-thread-{}", index % 20), manifest])
+                .unwrap();
+        }
+    }
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO native_rebuild_checkpoints_v1(caller,response,thread,account,generation,transcript,bytes,created)
+                 VALUES('caller',?1,?2,'a','legacy-generation',?3,?4,0)",
+            )
+            .unwrap();
+        for index in 0..33 {
+            let transcript = json!([message("user", &state_fixture_text(index + 1, 1_950_000))])
+                .to_string();
+            insert
+                .execute(params![format!("legacy-{index}"), format!("legacy-thread-{index}"), transcript, transcript.len()])
+                .unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "load test with a roughly 500 MiB synthetic identity database"]
+async fn large_identity_store_concurrent_requests_keep_history_after_restart() {
+    let mut fixture = Fixture::new(true).await;
+    fixture.stop_native().await;
+    seed_large_identity_store(&fixture.path());
+    let database_bytes = std::fs::metadata(fixture.path()).unwrap().len();
+    let database_mib = database_bytes / (1024 * 1024);
+    assert!(database_mib >= 480, "fixture size: {database_mib} MiB");
+    fixture.start(Options::default()).await;
+    let mut requests = (0..20)
+        .map(|index| {
+            let mut body = request(json!([message(
+                "user",
+                &state_fixture_text(index + 100_000, 550_000 + index as usize * 44_000),
+            )]));
+            let thread = format!("load-{index}");
+            body["client_metadata"] = json!({"session_id":thread,"thread_id":thread});
+            body
+        })
+        .collect::<Vec<_>>();
+    let mut samples = Vec::new();
+    for round in 0..2 {
+        for chunk in requests.chunks_mut(8) {
+            let completions = futures_util::future::join_all(
+                chunk.iter().map(|body| async {
+                    let start = std::time::Instant::now();
+                    let result = fixture.complete(body).await;
+                    (result, start.elapsed().as_millis())
+                }),
+            )
+            .await;
+            for (body, (result, elapsed)) in chunk.iter_mut().zip(completions) {
+                samples.push(elapsed);
+                if round == 0 {
+                    body["previous_response_id"] = result["id"].clone();
+                    body["input"].as_array_mut().unwrap().extend(
+                        result["output"].as_array().unwrap().iter().cloned(),
+                    );
+                    body["input"].as_array_mut().unwrap().push(message("user", "next turn"));
+                }
+            }
+        }
+        if round == 0 {
+            fixture.stop_native().await;
+            fixture.start(Options::default()).await;
+        }
+    }
+    let sent = fixture.sent();
+    assert_eq!(sent.len(), 40);
+    let db = Connection::open(fixture.path()).unwrap();
+    let new_checkpoints: usize = db
+        .query_row(
+            "SELECT count(*) FROM native_rebuild_checkpoints_v1 WHERE caller='caller' AND thread GLOB 'load-*'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_checkpoints, 40);
+    drop(db);
+    for request in &requests {
+        // Delivery order may change, but each thread's accepted prefix is exact.
+        assert_eq!(
+            sent[20..]
+                .iter()
+                .filter(|(_, observed)| observed["input"] == request["input"])
+                .count(),
+            1,
+        );
+    }
+    samples.sort_unstable();
+    println!(
+        "identity_db_mib={database_mib} requests={} p50_ms={} p95_ms={} max_ms={}",
+        samples.len(),
+        samples[samples.len() / 2],
+        samples[samples.len() * 95 / 100 - 1],
+        samples.last().unwrap(),
+    );
+    fixture.finish().await;
 }
 
 #[tokio::test]
@@ -614,13 +825,6 @@ async fn oauth_http_missing_checkpoint_foreign_caller_and_size_limit_fail_before
                 .unwrap()
                 .execute(
                     "DELETE FROM native_rebuild_checkpoints_v1 WHERE response=?1",
-                    [id],
-                )
-                .unwrap();
-            Connection::open(fixture.path())
-                .unwrap()
-                .execute(
-                    "DELETE FROM native_rebuild_history_v1 WHERE response=?1",
                     [id],
                 )
                 .unwrap();
@@ -971,6 +1175,40 @@ async fn oauth_http_checkpoint_expansion_preserves_cross_account_rebuild_and_cip
 }
 
 #[tokio::test]
+async fn oauth_http_previous_with_no_new_input_reuses_verified_checkpoint() {
+    for input in [None, Some(Value::Null), Some(json!([]))] {
+        for replacement in [false, true] {
+            let fixture = Fixture::new(true).await;
+            let first = fixture.complete(&initial()).await;
+            let mut next = delta(first["id"].as_str().unwrap(), "unused");
+            if let Some(input) = &input {
+                next["input"] = input.clone();
+            } else {
+                next.as_object_mut().unwrap().remove("input");
+            }
+
+            let foreign = fixture.send(&next, "foreign").await;
+            assert_eq!(foreign.status(), 409);
+            assert_eq!(fixture.sent().len(), 1);
+            fixture.host.removed_a.store(replacement, Ordering::SeqCst);
+
+            let response = fixture.send(&next, "caller").await;
+            let status = response.status();
+            let wire = response.text().await.unwrap();
+            assert_eq!(status, 200, "{wire}");
+            assert!(wire.contains("response.completed"), "{wire}");
+            let sent = fixture.sent();
+            assert_eq!(sent.len(), 2);
+            assert!(sent[1].1.get("previous_response_id").is_none());
+            assert_eq!(sent[1].1["input"], append(history(), first["output"].as_array().unwrap().clone()));
+            assert_eq!(sent[1].1["tools"], sent[0].1["tools"]);
+            assert_eq!(fixture.generation().0, if replacement { "b" } else { "a" });
+            fixture.finish().await;
+        }
+    }
+}
+
+#[tokio::test]
 async fn oauth_http_string_input_checkpoints_the_first_turn_and_two_incremental_turns() {
     for metadata in [true, false] {
         let fixture = Fixture::new(true).await;
@@ -1070,5 +1308,290 @@ async fn go_bridge_oauth_http_string_first_turn_and_delta_capture_complete_check
         }
     }
     bridge.stop().await.unwrap();
+    fixture.finish().await;
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// Seed a large-but-compact partial-history set so `prune_archive_batch` has
+/// thousands of rows to prune across batches without ballooning disk or being
+/// drained in one shot by `commit_rebuild`'s inline checkpoint eviction.
+fn seed_compact_archive(path: &Path, history_rows: usize) {
+    use rusqlite::params;
+    let mut connection = Connection::open(path).unwrap();
+    let transaction = connection.transaction().unwrap();
+    let created = now_secs() - 3600;
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO native_partial_history_v1(caller,response,thread,session,account,owner,transcript,parameters,bytes,created)
+                 VALUES('caller',?1,?2,'seed-session','a','owner-a','[]',NULL,2,?3)",
+            )
+            .unwrap();
+        for index in 0..history_rows {
+            insert
+                .execute(params![
+                    format!("seed-{index}"),
+                    format!("seed-thread-{}", index % 64),
+                    created
+                ])
+                .unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+}
+
+/// Drive the real `prune_archive_batch` from a background task exactly like the
+/// production maintenance loop (`spawn_blocking` + bounded yield), but with a
+/// controllable stop flag and a tighter yield so a test can bound runtime while
+/// maximising lock contention. `started` is set before the first batch and
+/// `ran` counts completed batches, giving tests deterministic synchronization.
+fn spawn_maintenance(
+    store: Arc<IdentityStore>,
+    stop: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+    ran: Arc<AtomicUsize>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let policy = super::identity::maintenance::MaintenancePolicy::default();
+        while !stop.load(Ordering::SeqCst) {
+            started.store(true, Ordering::SeqCst);
+            let store = Arc::clone(&store);
+            let now = now_secs();
+            let result = tokio::task::spawn_blocking(move || {
+                store.prune_archive_batch(now, &policy, false)
+            })
+            .await;
+            match result {
+                Ok(Ok(report)) => {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                    if !report.has_more {
+                        break;
+                    }
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
+            // Tighter than the production 25ms pause: the regression only has to
+            // survive the harsher contention, which also keeps the test fast.
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+}
+
+async fn wait_maintenance_running(
+    started: &Arc<AtomicBool>,
+    ran: &Arc<AtomicUsize>,
+    min_batches: usize,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while !started.load(Ordering::SeqCst) || ran.load(Ordering::SeqCst) < min_batches {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "maintenance loop must start and complete at least {min_batches} batches \
+             (ran={}, started={})",
+            ran.load(Ordering::SeqCst),
+            started.load(Ordering::SeqCst)
+        )
+    });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn maintenance_prune_running_concurrently_serves_new_and_continuation_requests() {
+    const HISTORY_ROWS: usize = 128_000;
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let new_request = |thread: &str, text: &str| {
+        let mut body = request(json!([message("user", text)]));
+        body["client_metadata"] = json!({"session_id": thread, "thread_id": thread});
+        body
+    };
+
+    // Baseline: an unseeded gateway with no maintenance running.
+    let (baseline_new_ms, baseline_cont_ms) = {
+        let fixture = Fixture::new(true).await;
+        let first = fixture.complete(&initial()).await;
+        let start = std::time::Instant::now();
+        for index in 0..4 {
+            fixture
+                .complete(&new_request(
+                    &format!("base-new-{index}"),
+                    &format!("baseline new {index}"),
+                ))
+                .await;
+        }
+        let new_ms = start.elapsed().as_millis();
+        let start = std::time::Instant::now();
+        let cont = fixture
+            .complete(&delta(first["id"].as_str().unwrap(), "baseline continuation"))
+            .await;
+        let cont_ms = start.elapsed().as_millis();
+        assert_eq!(cont["status"], "completed");
+        fixture.finish().await;
+        (new_ms, cont_ms)
+    };
+
+    // Maintenance-enabled: a seeded archive plus a live background prune loop.
+    let mut fixture = Fixture::new(true).await;
+    fixture.stop_native().await;
+    seed_compact_archive(&fixture.path(), HISTORY_ROWS);
+    fixture.start(Options::default()).await;
+
+    let first = fixture.complete(&initial()).await;
+
+    let store = fixture.gateway.as_ref().unwrap().identity_store();
+    let stop = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicBool::new(false));
+    let ran = Arc::new(AtomicUsize::new(0));
+    let maintenance = spawn_maintenance(
+        store,
+        Arc::clone(&stop),
+        Arc::clone(&started),
+        Arc::clone(&ran),
+    );
+
+    // Deterministic sync point: only fire requests once the prune loop has
+    // provably completed two batches and is still looping, so contention is
+    // guaranteed rather than a scheduling coincidence.
+    wait_maintenance_running(&started, &ran, 2).await;
+    let ran_at_fire = ran.load(Ordering::SeqCst);
+
+    let new_start = std::time::Instant::now();
+    let new_results = futures_util::future::join_all((0..4).map(|index| {
+        let body = new_request(
+            &format!("maint-new-{index}"),
+            &format!("maintenance new {index}"),
+        );
+        let fixture_ref = &fixture;
+        async move {
+            tokio::time::timeout(BUDGET, fixture_ref.complete(&body))
+                .await
+                .expect("new request must not starve during maintenance")
+        }
+    }))
+    .await;
+    for (index, result) in new_results.iter().enumerate() {
+        assert_eq!(result["status"], "completed", "maintenance new {index}: {result}");
+    }
+    let new_ms = new_start.elapsed().as_millis();
+
+    let cont_start = std::time::Instant::now();
+    let cont = tokio::time::timeout(
+        BUDGET,
+        fixture.complete(&delta(
+            first["id"].as_str().unwrap(),
+            "maintenance continuation",
+        )),
+    )
+    .await
+    .expect("continuation must not starve during maintenance");
+    let cont_ms = cont_start.elapsed().as_millis();
+    assert_eq!(cont["status"], "completed", "maintenance continuation: {cont}");
+
+    // The prune loop kept running while requests were in flight: overlap proof.
+    assert!(
+        ran.load(Ordering::SeqCst) > ran_at_fire,
+        "maintenance must still be pruning while requests are in flight \
+         (ran_at_fire={ran_at_fire}, ran_after={})",
+        ran.load(Ordering::SeqCst)
+    );
+
+    // The old session continued with its exact full history.
+    let sent = fixture.sent();
+    let forwarded = sent
+        .iter()
+        .find(|(_, value)| {
+            value["input"]
+                .as_array()
+                .and_then(|items| items.last())
+                .and_then(|m| m["content"].as_array().and_then(|c| c.first()))
+                .and_then(|t| t["text"].as_str())
+                == Some("maintenance continuation")
+        })
+        .expect("continuation must be forwarded to the mock upstream");
+    assert_eq!(
+        forwarded.1["input"],
+        append(
+            append(history(), first["output"].as_array().unwrap().clone()),
+            [message("user", "maintenance continuation")]
+        )
+    );
+
+    stop.store(true, Ordering::SeqCst);
+    maintenance.await.unwrap();
+
+    println!(
+        "maintenance_concurrency history_rows={HISTORY_ROWS} batches={} \
+         baseline_new_ms={baseline_new_ms} maint_new_ms={new_ms} \
+         baseline_cont_ms={baseline_cont_ms} maint_cont_ms={cont_ms}",
+        ran.load(Ordering::SeqCst)
+    );
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn maintenance_prune_cancelling_one_request_does_not_starve_others() {
+    let mut fixture = Fixture::new(true).await;
+    fixture.stop_native().await;
+    seed_compact_archive(&fixture.path(), 128_000);
+    fixture.start(Options::default()).await;
+
+    let store = fixture.gateway.as_ref().unwrap().identity_store();
+    let stop = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicBool::new(false));
+    let ran = Arc::new(AtomicUsize::new(0));
+    let maintenance = spawn_maintenance(
+        store,
+        Arc::clone(&stop),
+        Arc::clone(&started),
+        Arc::clone(&ran),
+    );
+
+    wait_maintenance_running(&started, &ran, 2).await;
+
+    // A slow upstream turn that the client cancels mid-flight.
+    *fixture.source.delay.lock().unwrap() = Some(std::time::Duration::from_secs(2));
+    let slow = {
+        let mut body = request(json!([message("user", "slow cancel target")]));
+        body["client_metadata"] = json!({"session_id": "slow", "thread_id": "slow"});
+        body
+    };
+    let cancelled = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        fixture.send(&slow, "caller"),
+    )
+    .await;
+    assert!(cancelled.is_err(), "slow request must be cancelled mid-flight");
+
+    // Sibling requests still complete normally while maintenance keeps running.
+    let results = futures_util::future::join_all((0..3).map(|index| {
+        let mut body = request(json!([message("user", &format!("sibling {index}"))]));
+        body["client_metadata"] = json!({
+            "session_id": format!("sibling-{index}"),
+            "thread_id": format!("sibling-{index}"),
+        });
+        let fixture_ref = &fixture;
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(10), fixture_ref.complete(&body))
+                .await
+                .expect("sibling request must not starve")
+        }
+    }))
+    .await;
+    for (index, result) in results.iter().enumerate() {
+        assert_eq!(result["status"], "completed", "sibling {index}: {result}");
+    }
+
+    stop.store(true, Ordering::SeqCst);
+    maintenance.await.unwrap();
+    assert!(ran.load(Ordering::SeqCst) >= 2);
     fixture.finish().await;
 }

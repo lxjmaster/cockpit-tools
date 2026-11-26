@@ -353,7 +353,7 @@ ZCode 인스턴스를 Electron 사용자 데이터, 세션 데이터, ZCode 데�
 *   **Windows**: `.msi`(권장), `.exe`, 또는 `x64-portable.zip`(압축 해제 후 바로 실행)
 
 Windows 휴대용 ZIP을 압축 해제한 뒤 포함된 `Cockpit Tools.exe`(또는 동명의 주 실행 파일)를 그대로 실행하십시오. Windows 10/11에 Microsoft Edge WebView2 Runtime이 필요합니다. 계정과 설정은 현재 Windows 사용자의 데이터 디렉터리에 저장되며 ZIP 폴더와 함께 이동하지 않습니다.
-*   **Linux**: `.deb` (Debian/Ubuntu), `.rpm` 또는 `.AppImage` (범용)
+*   **Linux**: `.deb` (Debian/Ubuntu), `.rpm` 또는 `.AppImage`
 
 ### 옵션 B: Homebrew로 설치 (macOS)
 
@@ -435,9 +435,7 @@ npm run tauri build
 
 ## 커뮤니티
 
-QQ 커뮤니티, 위챗 그룹 또는 새로 개설한 Telegram 대화 그룹 모두 참여할 수 있습니다.
-
-Telegram 대화 그룹 참여: [그룹 참여하기](https://t.me/+Y8gMv4SlZUU2MWY1)
+QQ 그룹에 참여하거나 위챗으로 연락할 수 있습니다.
 
 | QQ 그룹 | 위챗(개인) |
 | :---: | :---: |

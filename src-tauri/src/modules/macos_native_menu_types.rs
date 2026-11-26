@@ -21,6 +21,7 @@
             value_text: *const c_char,
             remaining_percent: i32,
             enabled: i32,
+            stacked: i32,
             status_item_ptr: *mut c_void,
         );
     }
@@ -142,12 +143,14 @@
 
     #[derive(Debug, Clone, Default)]
     struct CursorTrayUsage {
+        weekly: bool,
         total_used_percent: Option<i32>,
         auto_used_percent: Option<i32>,
         api_used_percent: Option<i32>,
         reset_ts: Option<i64>,
         on_demand_text: Option<String>,
         on_demand_percent: Option<i32>,
+        paid_monthly_cents: Option<i64>,
     }
 
     #[derive(Debug, Clone, Default)]

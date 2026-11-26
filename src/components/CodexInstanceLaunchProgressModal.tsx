@@ -1,3 +1,6 @@
+import { useCodexCountryProgress } from './useCodexCountryProgress';
+import { countryProgressLines } from '../utils/codexCountryProgress';
+import { codexCountryErrorKey, codexCountryErrorValues } from '../utils/codexProxyCountry';
 import { resolveCodexAccountDisplayName } from "../utils/codexAccountDisplayName";
 import { codexPathRecoveryKey, withCodexPathRecovery } from '../stores/useCodexPathRecoveryStore';
 import { isCodexLaunchCancelled } from '../utils/codexLaunchCancellation';
@@ -67,6 +70,7 @@ interface LaunchProgressPayload {
   authFailure?: CodexSwitchAuthFailure | null;
   canRetry?: boolean;
   transferConflictingAccount?: boolean;
+  expectedSwitchBinding?: string;
   accountId?: string;
   operation?: CodexLaunchOperation;
   source?: "switch-service";
@@ -91,6 +95,7 @@ interface LaunchProgressState {
   authFailure?: CodexSwitchAuthFailure | null;
   canRetry?: boolean;
   transferConflictingAccount?: boolean;
+  expectedSwitchBinding?: string;
   accountId?: string;
   operation?: CodexLaunchOperation;
   cancelled?: boolean;
@@ -105,6 +110,7 @@ const STEP_IDS: LaunchStepId[] = [
   "stopPrevious",
   "prepareCredentials",
   "writeProfile",
+  "checkProxyCountry",
   "startClient",
 ];
 
@@ -115,8 +121,9 @@ function createState(payload: LaunchProgressPayload): LaunchProgressState {
     isDefault: payload.isDefault === true,
     progress: payload.progress ?? 2,
     status: "running",
-    steps: STEP_IDS.map((id) => ({ id, status: "pending", details: {} })),
+    steps: STEP_IDS.map((id) => ({ id, status: id === "checkProxyCountry" ? "skipped" : "pending", details: {} })),
     transferConflictingAccount: payload.transferConflictingAccount === true,
+    expectedSwitchBinding: payload.expectedSwitchBinding,
     accountId: payload.accountId,
     operation: payload.operation || "instance-launch",
     source: payload.source,
@@ -134,6 +141,7 @@ function optionalBoolean(value: unknown): boolean | null {
 export function CodexInstanceLaunchProgressModal() {
   const { t, i18n } = useTranslation();
   const [state, setState] = useState<LaunchProgressState | null>(null);
+  useCodexCountryProgress(setState);
   const [actionBusy, setActionBusy] = useState<"locate" | "transfer" | "cancel" | null>(
     null,
   );
@@ -149,13 +157,17 @@ export function CodexInstanceLaunchProgressModal() {
     let unlistenSwitch: (() => void) | undefined;
     const applyPayload = (payload: LaunchProgressPayload) => {
       if (disposed || !payload.instanceId) return;
+      if (payload.type === "error" && codexCountryErrorKey(payload.error)) {
+        payload = { ...payload, step: "checkProxyCountry", stepStatus: "error",
+          details: { ...payload.details, error: payload.error } };
+      }
       const prerequisiteKey = payload.type === "error" ? proxyEnginePrerequisiteKey(payload.error) : null;
       if (prerequisiteKey) {
         presentProxyEnginePrerequisite(payload.error);
         payload = { ...payload, error: t(prerequisiteKey) };
       }
       const lifecycleKey = payload.type === "error" ? codexLaunchErrorKey(payload.error) : null;
-      if (lifecycleKey) payload = { ...payload, error: t(lifecycleKey) };
+      if (lifecycleKey) payload = { ...payload, error: t(lifecycleKey, codexCountryErrorValues(payload.error)) };
       if (payload.type === "complete") setActionError(null);
       setState((previous) => {
         if ((payload.type === "cancelled" || payload.cancelled === true)
@@ -190,7 +202,9 @@ export function CodexInstanceLaunchProgressModal() {
               step.id === payload.step
                 ? {
                     ...step,
-                    status: payload.stepStatus || "running",
+                    status: step.details.cliResumeError && payload.stepStatus === "completed"
+                      ? "warning"
+                      : payload.stepStatus || "running",
                     details: { ...step.details, ...(payload.details || {}) },
                   }
                 : step,
@@ -210,7 +224,7 @@ export function CodexInstanceLaunchProgressModal() {
             ...base,
             progress: 100,
             status: "completed",
-            steps: steps.map((step) => step.id === "startClient"
+            steps: steps.map((step) => step.id === "startClient" && !step.details.cliResumeError
               ? { ...step, status: "completed", details: { ...step.details, error: undefined } } : step),
             error: undefined,
             authFailure: null,
@@ -229,7 +243,10 @@ export function CodexInstanceLaunchProgressModal() {
             payload.authFailure ?? parseCodexSwitchAuthFailure(payload.error);
           const isAuthRequired = authFailure !== null;
           const unconfirmed = isCodexLaunchUnconfirmed(payload.error);
+          const countryFailed = steps.some(step => step.id === "checkProxyCountry" && step.status === "error");
           const markedSteps = steps.map((step) =>
+            countryFailed && step.id !== "checkProxyCountry" && step.status === "running"
+              ? { ...step, status: "pending" as const } :
             step.status === "running"
               ? {
                   ...step,
@@ -254,6 +271,7 @@ export function CodexInstanceLaunchProgressModal() {
             transferConflictingAccount:
               payload.transferConflictingAccount ??
               base.transferConflictingAccount,
+            expectedSwitchBinding: payload.expectedSwitchBinding ?? base.expectedSwitchBinding,
             cancelled: false,
           };
         }
@@ -405,6 +423,8 @@ export function CodexInstanceLaunchProgressModal() {
       return [t("codex.switchProgress.detail.waiting")];
     }
     switch (step.id) {
+      case "checkProxyCountry":
+        return step.status === "skipped" ? [t("codex.proxy.country.notRequired")] : countryProgressLines(step.details, t);
       case "checkInstance":
         return step.details.userDataDir
           ? [String(step.details.userDataDir)]
@@ -497,6 +517,9 @@ export function CodexInstanceLaunchProgressModal() {
           ] : [])];
       case "startClient":
         if (state.status === "unconfirmed") return [t("codex.launchConfirmation.description")];
+        if (step.details.cliResumeStarted) return [t("instances.accountLease.detail.cliResumeStarted")];
+        if (typeof step.details.cliResumeError === "string")
+          return [t("codex.switchProgress.detail.clientStartWarning"), step.details.cliResumeError];
         return step.details.launchMode === "cli"
           ? [t("instances.accountLease.detail.cliPrepared")]
           : [t("instances.accountLease.detail.startingClient")];
@@ -569,6 +592,7 @@ export function CodexInstanceLaunchProgressModal() {
       state.instanceId,
       {
         transferConflictingAccount: true,
+        expectedSwitchBinding: state.expectedSwitchBinding,
       },
     );
     window.dispatchEvent(
@@ -613,6 +637,7 @@ export function CodexInstanceLaunchProgressModal() {
           state.instanceId,
           {
             transferConflictingAccount: state.transferConflictingAccount,
+            expectedSwitchBinding: state.expectedSwitchBinding,
           },
         );
         window.dispatchEvent(
@@ -624,13 +649,14 @@ export function CodexInstanceLaunchProgressModal() {
     } catch (error) {
       if (isCodexLaunchUnconfirmed(error)) return;
       const errorKey = codexLaunchErrorKey(error);
-      setActionError(errorKey ? t(errorKey) : String(error).replace(/^Error:\s*/, ""));
+      setActionError(errorKey ? t(errorKey, codexCountryErrorValues(error)) : String(error).replace(/^Error:\s*/, ""));
     } finally {
       setRetryBusy(null);
     }
   };
 
-  const failedStepId = state.source === "switch-service"
+  const failedStepId = state.source === "switch-service" || codexCountryErrorKey(state.error) !== null
+    || state.steps.some(step => step.id === "checkProxyCountry" && step.status === "error")
     ? undefined
     : state.steps.find((step) =>
         step.status === "error" || step.status === "warning",
@@ -677,6 +703,7 @@ export function CodexInstanceLaunchProgressModal() {
     try {
       const instance = await codexInstanceService.startInstance(state.instanceId, {
         transferConflictingAccount: state.transferConflictingAccount,
+        expectedSwitchBinding: state.expectedSwitchBinding,
         skipFailedStep: failedStepId,
       });
       window.dispatchEvent(
@@ -685,7 +712,7 @@ export function CodexInstanceLaunchProgressModal() {
     } catch (error) {
       if (isCodexLaunchUnconfirmed(error)) return;
       const errorKey = codexLaunchErrorKey(error);
-      setActionError(errorKey ? t(errorKey) : String(error).replace(/^Error:\s*/, ""));
+      setActionError(errorKey ? t(errorKey, codexCountryErrorValues(error)) : String(error).replace(/^Error:\s*/, ""));
     } finally {
       setRetryBusy(null);
     }
@@ -845,7 +872,7 @@ export function CodexInstanceLaunchProgressModal() {
               const failureKey = codexLaunchErrorKey(failureValue);
               const failure =
                 step.status === "error"
-                  ? failureKey ? t(failureKey) : conciseCodexCredentialFailure(failureValue)
+                  ? failureKey ? t(failureKey, codexCountryErrorValues(failureValue)) : conciseCodexCredentialFailure(failureValue)
                   : null;
               const renderedDetailLines =
                 failure && !detailLines.some((line) => line.includes(failure))

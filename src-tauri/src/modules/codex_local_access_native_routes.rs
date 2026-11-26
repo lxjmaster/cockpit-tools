@@ -1,5 +1,13 @@
 #[path = "codex_local_access_native_grok.rs"]
 mod native_grok;
+#[path = "codex_local_access_native_zcode.rs"]
+mod native_zcode;
+#[path = "codex_local_access_native_workbuddy.rs"]
+mod native_workbuddy;
+
+#[cfg(test)]
+#[path = "codex_local_access_native_workbuddy_route_tests.rs"]
+mod native_workbuddy_route_tests;
 
 // Native provider selection, credentials and model catalogs. No legacy wire executor.
 
@@ -13,27 +21,47 @@ fn native_is_oauth_authorization_account(account: &CodexAccount) -> bool {
     !account.is_api_key_auth() || native_is_chatgpt_plan_account(account)
 }
 
-fn native_default_codex_model(model: &str) -> bool {
-    // The client catalog also contains third-party provider models. It is not
-    // evidence that a ChatGPT credential can serve those models.
-    // Reserve is an explicit official capability, not a provider-catalog model.
-    native_is_reserve_model(model)
-        || default_codex_model_ids()
-        .iter()
-        .any(|candidate| candidate.eq_ignore_ascii_case(model.trim()))
-        || (is_gpt_or_codex_namespace_model(model)
-            && api_service_routable_codex_model_ids()
-                .iter()
-                .chain(api_service_supported_codex_model_ids().iter())
-                .any(|candidate| candidate.eq_ignore_ascii_case(model.trim())))
+#[derive(Clone, Default)]
+struct NativeRouteCodexCatalog {
+    defaults: std::sync::OnceLock<Vec<String>>,
+    routable: std::sync::OnceLock<Vec<String>>,
 }
 
-fn native_chatgpt_plan_model(account: &CodexAccount, model: &str) -> Option<String> {
+impl NativeRouteCodexCatalog {
+    fn allows_codex_account(&self, model: &str) -> bool {
+        // Third-party models in the client catalog do not prove that a
+        // ChatGPT credential supports them.
+        native_is_reserve_model(model)
+            || self.defaults.get_or_init(default_codex_model_ids).iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(model.trim()))
+            || (is_gpt_or_codex_namespace_model(model) && self.lists(model.trim()))
+    }
+
+    fn routable(&self) -> &[String] {
+        // Routable IDs read the saved wakeup presets. Share this snapshot
+        // across all candidates and policy checks within the request.
+        self.routable.get_or_init(|| {
+            let mut models = api_service_routable_codex_model_ids();
+            models.extend(api_service_supported_codex_model_ids());
+            models
+        })
+    }
+
+    fn lists(&self, model: &str) -> bool {
+        self.routable().iter().any(|candidate| candidate.eq_ignore_ascii_case(model))
+    }
+}
+
+fn native_chatgpt_plan_model(
+    catalog: &NativeRouteCodexCatalog,
+    account: &CodexAccount,
+    model: &str,
+) -> Option<String> {
     if account.api_model_catalog.is_empty() {
         // Cold catalog is not absent consent. Retain the existing public/key
         // model ACL and only route locally known Codex models until GET /models
         // supplies this grant's real catalog; never expose arbitrary models.
-        return native_default_codex_model(model).then(|| model.trim().to_owned());
+        return catalog.allows_codex_account(model).then(|| model.trim().to_owned());
     }
     account
         .api_model_catalog
@@ -53,6 +81,7 @@ struct NativeModelRoutePlan {
     automatic_service_models: bool,
     gateway: Option<CodexLocalAccessProviderGateway>,
     xai: bool,
+    codex_catalog: NativeRouteCodexCatalog,
 }
 
 fn native_gateway_models(gateway: &CodexLocalAccessProviderGateway) -> Vec<String> {
@@ -113,6 +142,7 @@ fn native_model_route_plan(
             .is_none_or(|key| key.model_routing.is_none() && key.provider_gateway.is_none()),
         gateway: None,
         xai: false,
+        codex_catalog: NativeRouteCodexCatalog::default(),
     };
     let Some(key) = key else {
         return Ok(plan);
@@ -164,7 +194,7 @@ fn native_model_route_plan(
                 || route
                     .native_provider
                     .as_deref()
-                    .is_some_and(|provider| !matches!(provider, "" | "xai"))
+                    .is_some_and(|provider| !matches!(provider, "" | "xai" | "zcode" | "workbuddy_acp"))
             {
                 return Err(native_error(
                     400,
@@ -234,6 +264,36 @@ mod native_provider_routes_tests {
                 refresh_token: None,
             },
         )
+    }
+
+    #[test]
+    fn native_provider_routes_bundled_gpt_6_2_models_are_listed_and_routable() {
+        let collection = collection();
+        let mut key = key();
+        let account = oauth();
+        let catalog = native_catalog(&collection, Some(&key), &[account.clone()]).unwrap();
+        let models = catalog["models"].as_array().unwrap();
+        let ordered_gpt: Vec<_> = models
+            .iter()
+            .filter_map(|entry| entry["slug"].as_str())
+            .filter(|id| id.starts_with("gpt-"))
+            .take(10)
+            .collect();
+        assert_eq!(ordered_gpt, [
+            "gpt-6.1-sol", "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra",
+            "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ]);
+        for model in crate::modules::codex_model_catalog::GPT_6_2_MODELS {
+            assert!(catalog["data"].as_array().unwrap().iter().any(|entry| entry["id"] == model));
+            let entry = models.iter().find(|entry| entry["slug"] == model).unwrap();
+            assert!(entry["service_tiers"].as_array().unwrap().iter().any(|tier| tier["id"] == "ultrafast"));
+            let route = native_model_route_plan(&collection, Some(&key), model).unwrap();
+            assert!(native_model_visible(&collection, Some(&key), &route, &account));
+        }
+        key.allowed_models = vec!["gpt-6.2-sol".into()];
+        let restricted = native_catalog(&collection, Some(&key), &[account]).unwrap();
+        assert!(!restricted["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == "gpt-6.2-astra"));
     }
 
     #[test]
@@ -455,13 +515,14 @@ fn native_plan_account_model(
             // This service-only OAuth projection has its own server catalog,
             // not a normal provider's catalog-synchronization preference.
             return native_chatgpt_plan_model(
+                &plan.codex_catalog,
                 account,
                 native_automatic_canonical_model(collection, &model),
             );
         }
-        let upstream = native_automatic_account_model(collection, account, &model)?;
+        let upstream = native_automatic_account_model(collection, account, &model, &plan.codex_catalog)?;
         return if native_is_chatgpt_plan_account(account) {
-            native_chatgpt_plan_model(account, &upstream)
+            native_chatgpt_plan_model(&plan.codex_catalog, account, &upstream)
         } else {
             Some(upstream)
         };
@@ -470,7 +531,7 @@ fn native_plan_account_model(
     // catalog uses only the pre-existing local Codex model allowlist.
     if native_is_chatgpt_plan_account(account) {
         let upstream = native_account_mapped_model(account, &plan.model).unwrap_or(&plan.model);
-        return native_chatgpt_plan_model(account, upstream);
+        return native_chatgpt_plan_model(&plan.codex_catalog, account, upstream);
     }
     if plan.provider {
         // An explicit provider catalog can contain additional models not yet in the account catalog.
@@ -484,7 +545,7 @@ fn native_plan_account_model(
         if plan.automatic {
             if !account.is_api_key_auth() {
                 if let Some(upstream) = native_account_mapped_model(account, &model) {
-                    return native_default_codex_model(upstream).then(|| upstream.to_owned());
+                    return plan.codex_catalog.allows_codex_account(upstream).then(|| upstream.to_owned());
                 }
             }
             if account.is_api_key_auth() || !account.api_model_catalog.is_empty() {
@@ -498,17 +559,13 @@ fn native_plan_account_model(
             }
             if !account.is_api_key_auth()
                 && !codex_account::is_grok_upstream_provider(account)
-                && !native_default_codex_model(&model)
+                && !plan.codex_catalog.allows_codex_account(&model)
             {
                 return None;
             }
             // Native/empty Responses pools accept the existing hidden routable models,
             // not names that are declared only by a different provider's route.
-            let listed = native_is_reserve_model(&model)
-                || api_service_routable_codex_model_ids()
-                    .iter()
-                    .chain(api_service_supported_codex_model_ids().iter())
-                    .any(|candidate| candidate.eq_ignore_ascii_case(&model));
+            let listed = native_is_reserve_model(&model) || plan.codex_catalog.lists(&model);
             if !listed {
                 return None;
             }
@@ -518,7 +575,7 @@ fn native_plan_account_model(
 }
 
 fn native_plan_requires_account_mapping(plan: &NativeModelRoutePlan, accounts: &[CodexAccount]) -> bool {
-    plan.oauth_only && !native_default_codex_model(&plan.model)
+    plan.oauth_only && !plan.codex_catalog.allows_codex_account(&plan.model)
         && accounts.iter().any(|account| {
             plan.account_ids.contains(&account.id)
                 && native_is_oauth_authorization_account(account)
@@ -567,15 +624,31 @@ fn native_account_owner(account: &CodexAccount, base_url: &str) -> String {
     // replacement has no such identity proof, even when the local record is the
     // same, so it must not reuse the old key's upstream continuation state.
     // Keep only a digest; credentials must never enter the identity database.
-    let credential_scope =
-        if account.is_api_key_auth() && !codex_account::is_grok_upstream_provider(account) {
-            format!(
-                "{:x}",
-                Sha256::digest(account.openai_api_key.as_deref().unwrap_or("").as_bytes())
-            )
-        } else {
-            String::new()
-        };
+    let credential_scope = if codex_account::is_zcode_upstream_provider(account)
+        || codex_account::is_workbuddy_upstream_provider(account)
+    {
+        format!(
+            "{}:{}",
+            account.api_credential_kind.as_deref().unwrap_or(""),
+            account.api_credential_ref.as_deref().unwrap_or("")
+        )
+    } else if account.is_api_key_auth() && !codex_account::is_grok_upstream_provider(account) {
+        format!(
+            "{:x}",
+            Sha256::digest(account.openai_api_key.as_deref().unwrap_or("").as_bytes())
+        )
+    } else {
+        String::new()
+    };
+    let upstream_scope = if account.api_credential_ref.is_some() {
+        format!(
+            "{}:{}",
+            account.upstream_grok_account_id.as_deref().unwrap_or(""),
+            account.api_credential_ref.as_deref().unwrap_or("")
+        )
+    } else {
+        account.upstream_grok_account_id.as_deref().unwrap_or("").to_string()
+    };
     let agent_scope = account.agent_identity.as_ref().map(|identity| {
         (
             identity.agent_runtime_id.as_str(),
@@ -596,7 +669,7 @@ fn native_account_owner(account: &CodexAccount, base_url: &str) -> String {
         },
         account.user_id.as_deref().unwrap_or(""),
         account.account_id.as_deref().unwrap_or(""),
-        account.upstream_grok_account_id.as_deref().unwrap_or(""),
+        upstream_scope,
         base_url.trim_end_matches('/'),
         credential_scope
     )
@@ -719,6 +792,39 @@ async fn native_account_credentials(
                 account = updated;
                 headers = auth;
                 "https://chatgpt.com/backend-api/codex".to_string()
+            } else if codex_account::is_workbuddy_upstream_provider(&account) {
+                native_workbuddy::validate_reference(&account)?;
+                let source = codex_account::workbuddy_upstream_account(&account)
+                    .ok_or_else(|| "WorkBuddy account is unavailable".to_string())?;
+                if source.access_token.trim().is_empty()
+                    || source
+                        .expires_at
+                        .is_some_and(|expires_at| expires_at <= chrono::Utc::now().timestamp_millis())
+                    || source.status.as_deref().is_some_and(|status| {
+                        matches!(status, "expired" | "reauth_required" | "reauthorization_required")
+                    })
+                {
+                    return Err("WorkBuddy account token is missing or expired".to_string());
+                }
+                headers = native_workbuddy::credential_headers(&source)?;
+                native_workbuddy::bind_owner(&mut account, &source);
+                codex_account::WORKBUDDY_ACP_BASE_URL.to_string()
+            } else if codex_account::is_zcode_upstream_provider(&account) {
+                let source = crate::modules::zcode_account::load_account(
+                    account.api_credential_ref.as_deref().unwrap_or(""),
+                )
+                .ok_or_else(|| "ZCode account is unavailable".to_string())?;
+                let oauth = codex_account::is_zcode_oauth_upstream_provider(&account);
+                if oauth != (source.auth_mode == crate::models::zcode::ZcodeAuthMode::Oauth) {
+                    return Err("ZCode credential type changed; reconnect the account".to_string());
+                }
+                if oauth {
+                    headers = native_zcode::oauth_credential_headers(&source)?;
+                } else {
+                    headers = native_zcode::credential_headers(&source)?;
+                }
+                native_zcode::bind_owner(&mut account, &source);
+                native_zcode::base_url(&source).to_string()
             } else if account.is_api_key_auth() {
                 if account.api_wire_api.as_deref() == Some("anthropic") && account.api_auth_scheme.as_deref() != Some("bearer") {
                     headers.insert("x-api-key", HeaderValue::from_str(account.openai_api_key.as_deref().unwrap_or("")).map_err(|_| "Invalid API key")?);
@@ -768,6 +874,26 @@ async fn native_account_credentials(
 
 fn native_credential_error(error: &str) -> native_contract::ServiceError {
     match error {
+        "WORKBUDDY_INVALID_REFERENCE" => native_error(
+            400,
+            "invalid_workbuddy_account",
+            "WorkBuddy ACP requires a linked account with the native internal route",
+        ),
+        "ZCODE_OAUTH_REAUTH_REQUIRED" => native_error(
+            401,
+            "zcode_oauth_reauthorization_required",
+            "ZCode OAuth credentials are unavailable; sign in again in ZCode",
+        )
+        .with_credential_scope(true),
+        "ZCODE_START_PLAN_REQUIRED" => native_error(
+            403, "zcode_start_plan_required",
+            "Refresh your ZCode quota to confirm an active personal Z.ai Start Plan",
+        ),
+        "ZCODE_BIGMODEL_PROJECT_API_KEY_REQUIRED" => native_error(
+            403,
+            "zcode_bigmodel_project_api_key_required",
+            "BigModel OAuth accounts require a project API key for inference; use a BigModel API Key account instead",
+        ),
         "CHATGPT_PLAN_REAUTH_REQUIRED" | "CHATGPT_PLAN_DISCONNECTED" | "CHATGPT_PLAN_NOT_FOUND" => {
             native_error(
                 401,
@@ -970,6 +1096,9 @@ fn native_catalog(
         }
     }
     let mut value = codex_protocol::build_codex_client_models_response(&ids);
+    if automatic {
+        apply_profile_model_ordering(&mut value);
+    }
     let remote_templates = native_catalog_remote_templates(accounts);
     if let Some(models) = value["models"].as_array_mut() {
         for model in models.iter_mut() {
@@ -1003,22 +1132,50 @@ fn native_catalog(
                 native_apply_oauth_mapping_metadata(model, account, &plan.model, upstream);
                 if let Some(template) = remote_templates.get(&(account.id.clone(),upstream.clone()))
                 {
+                    let keep_recommended_priority = automatic
+                        && model["slug"].as_str()
+                            .and_then(crate::modules::codex_model_catalog::recommended_model_rank)
+                            .is_some();
                     for field in REMOTE_MODEL_FIELDS {
+                        if keep_recommended_priority && *field == "priority" {
+                            continue;
+                        }
                         if let Some(value) = template.get(*field) { model[*field] = value.clone(); }
                     }
                 }
-                native_apply_catalog_account_context(model, account, &plan.model, upstream);
+                native_apply_catalog_account_metadata(model, account, &plan.model, upstream);
             }
         }
         models.sort_by_key(|model| model["priority"].as_i64().unwrap_or(i64::MAX));
     }
-    value["object"] = json!("list");
-    value["data"] = json!(selected
+    // The public and Codex client views must advertise the same image input
+    // support after the selected route's aliases and metadata have been applied.
+    let client_vision: HashMap<_, _> = value["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let slug = model["slug"].as_str()?;
+            let modalities = model["input_modalities"].as_array()?;
+            Some((slug, modalities.iter().any(|value| value == "image")))
+        })
+        .collect();
+    let public_models = selected
         .iter()
-        .map(|(id, upstream, account, plan)| native_public_model_entry(
-            collection, plan, account, id, upstream, remote_templates.get(&(account.id.clone(),upstream.clone()))
-        ))
-        .collect::<Vec<_>>());
+        .map(|(id, upstream, account, plan)| {
+            let vision = client_vision.get(id.as_str()).copied()
+                .unwrap_or_else(|| native_catalog_vision(collection, plan, account, upstream));
+            native_public_model_entry(
+                account,
+                id,
+                upstream,
+                remote_templates.get(&(account.id.clone(), upstream.clone())),
+                vision,
+            )
+        })
+        .collect::<Vec<_>>();
+    value["object"] = json!("list");
+    value["data"] = json!(public_models);
     Ok(value)
 }
 
@@ -1097,7 +1254,7 @@ fn native_model_quota_retry_wait(
         return None;
     }
     let now = now_ms();
-    let snapshot = account_quota_cooldown(account, now)?;
+    let snapshot = pool_account_quota_cooldown(collection, account, now)?;
     if !snapshot.active(now) {
         // The reset may have elapsed between the first policy check and now.
         return native_model_quota_allows(collection, account, model)
@@ -1106,6 +1263,29 @@ fn native_model_quota_retry_wait(
     snapshot
         .reset_at_ms
         .map(|reset| Duration::from_millis(reset.saturating_sub(now).max(0) as u64))
+}
+
+fn native_pool_quota_floor_error(
+    collection: &CodexLocalAccessCollection,
+    account: &CodexAccount,
+    model: &str,
+) -> Option<native_contract::ServiceError> {
+    if native_is_reserve_model(model) || native_is_chatgpt_plan_account(account) {
+        return None;
+    }
+    let floor = configured_pool_quota_floor(collection, account)?;
+    let now = now_ms();
+    let cooldown = account_quota_cooldown_at_floor(account, now, floor)?;
+    if !cooldown.active(now) {
+        return None;
+    }
+    Some(native_error(429, "quota_reserved", "Account reached its configured minimum remaining quota")
+        .with_retry_after(cooldown.reset_at_ms.map(|reset| Duration::from_millis(reset.saturating_sub(now) as u64)))
+        .with_error_details(json!({
+            "code": "quota_reserved",
+            "message": "Account reached its configured minimum remaining quota",
+            "minimumRemainingPercent": floor,
+        })))
 }
 
 async fn native_select_route(
@@ -1151,7 +1331,10 @@ async fn native_select_route_once(
     mut request: native_contract::RouteRequest,
     rebuild_available: bool,
 ) -> Result<native_contract::Route, native_contract::ServiceError> {
-    let collection = host.collection().await?;
+    let mut collection = host.collection().await?;
+    if caller.id == NATIVE_INTERNAL_CALLER {
+        collection.account_quota_floors.clear();
+    }
     let key = native_caller_key(&collection, caller)?;
     let public_model = native_model_for_route_plan(&collection, key, &request.model)?;
     let mut plan = native_model_route_plan(&collection, key, &public_model)?;
@@ -1296,10 +1479,6 @@ async fn native_select_route_once(
             })
             && (!plan.oauth_only || native_is_oauth_authorization_account(account))
             && !native_xai_base_denied(&collection, key, &plan, account)
-            && !(collection.restrict_free_accounts
-                && account.plan_type.as_deref() == Some("free")
-                && (!account.is_api_key_auth() || native_is_chatgpt_plan_account(account))
-                && !account.is_agent_identity_auth())
             && native_operation_model(
                 &collection,
                 &plan,
@@ -1321,6 +1500,8 @@ async fn native_select_route_once(
     native_filter_capability_backups(&collection, &plan, &request, &mut accounts)?;
     // Quota reservation uses a separate coordinator lock. Resolve quota readiness
     // first, then combine it with in-memory cooldowns without nesting those locks.
+    let mut reserved_owner_error = None;
+    let mut pool_quota_floor_error = None;
     let quota_candidates: HashMap<_, _> = accounts
         .iter()
         .filter_map(|account| {
@@ -1331,10 +1512,37 @@ async fn native_select_route_once(
                 request.auxiliary.as_deref(),
                 request.image_input,
             )?;
-            let wait = native_model_quota_retry_wait(&collection, account, &upstream)?;
+            if let Some(error) = native_pool_quota_floor_error(&collection, account, &upstream) {
+                if request.preferred_account_id.as_ref() == Some(&account.id) {
+                    reserved_owner_error = Some(error.with_local_rejected_account(account.id.clone()));
+                    return None;
+                }
+                pool_quota_floor_error.get_or_insert(error);
+            }
+            let wait = native_model_quota_retry_wait(&collection, account, &upstream);
+            if wait.is_none()
+                && request.preferred_account_id.as_ref() == Some(&account.id)
+                && !native_is_chatgpt_plan_account(account)
+                && (!native_is_reserve_model(&upstream)
+                    || account.is_api_key_auth()
+                    || account_has_gpt_reserve_entitlement(account))
+            {
+                reserved_owner_error = quota_reserve_policy(&collection, &account.id)
+                    .and_then(|reserve| {
+                        let runtime = quota_reserve_coordinator().lock().ok()?;
+                        quota_reserve_admission_error(&reserve, account, runtime.accounts.get(&account.id))
+                    })
+                    .map(|error| error.with_local_rejected_account(account.id.clone()));
+            }
+            // Keep the mapped model even when a quota reset time is unknown.
             Some((account.id.clone(), (upstream, wait)))
         })
         .collect();
+    // An eligible continuation owner can be temporarily protected by the local
+    // reserve. Let the request layer check whether its history can be rebuilt.
+    if let Some(error) = reserved_owner_error {
+        return Err(error);
+    }
     let mut closest_cooldown = None;
     let mut owner_quota_exhausted = false;
     let mut all_candidates_usage_exhausted = !accounts.is_empty();
@@ -1344,25 +1552,29 @@ async fn native_select_route_once(
             native_error(503, "service_unavailable", "Account state is unavailable")
         })?;
         confirmed_quota_failover = request.excluded_account_ids.iter().any(|id| {
-            cooldowns.get(&native_cooldown_key(id, "", true))
-                .is_some_and(|state| state.reason == NATIVE_CONFIRMED_QUOTA)
+            native_confirmed_quota_active(&cooldowns, id, &model, Instant::now())
         });
         accounts.retain(|account| {
-            let snapshot_exhausted = !native_is_reserve_model(&model)
-                && !native_is_chatgpt_plan_account(account)
-                && account_quota_cooldown(account, now_ms())
-                    .is_some_and(|quota| quota.active(now_ms()));
-            let confirmed_exhausted = cooldowns
-                .get(&native_cooldown_key(&account.id, "", true))
-                .is_some_and(|state| {
-                    state.reason == NATIVE_CONFIRMED_QUOTA && state.until > Instant::now()
-                });
-            all_candidates_usage_exhausted &= snapshot_exhausted || confirmed_exhausted;
             let Some((upstream, quota_wait)) = quota_candidates.get(&account.id) else {
+                all_candidates_usage_exhausted = false;
                 return false;
             };
             let now = Instant::now();
-            let memory_wait = if native_is_chatgpt_plan_account(account) {
+            let now_ms = now_ms();
+            let snapshot_exhausted = !native_is_reserve_model(upstream)
+                && !native_is_chatgpt_plan_account(account)
+                && pool_account_quota_cooldown(&collection, account, now_ms)
+                    .is_some_and(|quota| quota.active(now_ms));
+            let confirmed_exhausted = native_confirmed_quota_active(&cooldowns, &account.id, upstream, now);
+            all_candidates_usage_exhausted &= snapshot_exhausted || confirmed_exhausted;
+            let Some(quota_wait) = *quota_wait else {
+                return false;
+            };
+            let bound_official = native_is_chatgpt_plan_account(account)
+                && !account
+                    .id
+                    .starts_with(codex_account::CHATGPT_PLAN_ACCOUNT_PREFIX);
+            let memory_wait = if bound_official {
                 Duration::ZERO
             } else {
                 native_cooldown_wait(
@@ -1375,13 +1587,12 @@ async fn native_select_route_once(
                 .unwrap_or(Duration::ZERO)
             };
             if rebuild_available && request.preferred_account_id.as_ref() == Some(&account.id) {
-                owner_quota_exhausted = !quota_wait.is_zero() || cooldowns
-                    .get(&native_cooldown_key(&account.id, "", true))
-                    .is_some_and(|state| state.reason == NATIVE_CONFIRMED_QUOTA && state.until > now);
+                owner_quota_exhausted = !quota_wait.is_zero()
+                    || native_confirmed_quota_active(&cooldowns, &account.id, upstream, now);
             }
             // Both barriers must expire; an ordinary cooldown cannot shorten
             // the real quota window, including when soft cooling is disabled.
-            let wait = (*quota_wait).max(memory_wait);
+            let wait = quota_wait.max(memory_wait);
             if request
                 .preferred_account_id
                 .as_ref()
@@ -1416,6 +1627,9 @@ async fn native_select_route_once(
             && request.preferred_account_id.is_none()
             && request.capability_fallback_from.is_none()
         {
+            if let Some(error) = pool_quota_floor_error {
+                return Err(error);
+            }
             return Err(native_usage_exhausted_error(closest_cooldown));
         }
         if request.capability_fallback_from.is_some() {
@@ -1440,18 +1654,19 @@ async fn native_select_route_once(
         request.target_account_id.as_deref(),
     );
     native_sort_accounts_scoped(host, &mut accounts, &collection, key, &routing_namespace);
-    if request.auxiliary.as_deref() == Some("search") {
-        // Preserve the native OAuth search path when a scoped OAuth account
-        // is available. A compatible relay can serve API-key-only pools.
-        accounts.sort_by_key(CodexAccount::is_api_key_auth);
-    } else if plan.automatic {
-        // The old automatic gateway exhausts native candidates before provider routes.
-        // Preserve the configured selection order within each group.
-        accounts.sort_by_key(|account| {
-            automatic_api_service_provider_route_eligible(
-                account,
-                &native_automatic_upstream_models(&collection, account),
-            ) && !codex_account::is_grok_upstream_provider(account)
+    let search = request.auxiliary.as_deref() == Some("search");
+    if search || plan.automatic {
+        // Prefer the native transport within each configured account priority.
+        accounts.sort_by_cached_key(|account| {
+            let priority = account_usage_priority(native_account_routing_rule(account, &collection));
+            let relay = if search {
+                account.is_api_key_auth()
+            } else {
+                automatic_api_service_provider_route_eligible(account, || {
+                    native_automatic_upstream_models(&collection, account)
+                }) && !codex_account::is_grok_upstream_provider(account)
+            };
+            (std::cmp::Reverse(priority), relay)
         });
     }
     if request.capability_fallback_from.is_some() {
@@ -1560,7 +1775,11 @@ async fn native_select_route_once(
         // Another request can cool this account while its semaphore is queued.
         // Recheck the mapped model after admission, without holding the state
         // lock across a wait or charging an upstream attempt for a local skip.
-        let (cooldown, quota_exhausted) = if native_is_chatgpt_plan_account(account) {
+        let bound_official = native_is_chatgpt_plan_account(account)
+            && !account
+                .id
+                .starts_with(codex_account::CHATGPT_PLAN_ACCOUNT_PREFIX);
+        let (cooldown, quota_exhausted) = if bound_official {
             (None, false)
         } else {
             let states = host.cooldowns.lock().map_err(|_| {
@@ -1575,11 +1794,7 @@ async fn native_select_route_once(
                     collection.disable_cooling,
                     now,
                 ),
-                states
-                    .get(&native_cooldown_key(&account.id, "", true))
-                    .is_some_and(|state| {
-                        state.reason == NATIVE_CONFIRMED_QUOTA && state.until > now
-                    }),
+                native_confirmed_quota_active(&states, &account.id, &upstream_model, now),
             )
         };
         let Some(wait) = cooldown else {
@@ -2010,8 +2225,29 @@ async fn native_route_for_reserved_account(
     http1_only: bool,
 ) -> Result<native_contract::Route, native_contract::ServiceError> {
     let account = native_prepare_account(account, force_refresh).await?;
-    let (account, mut headers, base_url, official_authorization_revision) =
-        native_account_credentials(account, force_refresh).await?;
+    let credentials = native_account_credentials(account, force_refresh).await?;
+    native_route_for_prepared_account(
+        host,
+        collection,
+        credentials,
+        upstream_model,
+        permit,
+        http1_only,
+    )
+    .await
+}
+
+// Share the complete transport-dispatch path with deterministic tests without
+// loading a user's linked WorkBuddy account or credentials from disk.
+async fn native_route_for_prepared_account(
+    host: &NativeHostBridge,
+    collection: &CodexLocalAccessCollection,
+    credentials: (CodexAccount, axum::http::HeaderMap, String, Option<String>),
+    upstream_model: String,
+    permit: Option<Arc<dyn Send + Sync>>,
+    http1_only: bool,
+) -> Result<native_contract::Route, native_contract::ServiceError> {
+    let (account, mut headers, base_url, official_authorization_revision) = credentials;
     if account.official_registration_id.is_some()
         && !host
             .selected_authorization_current(
@@ -2027,6 +2263,9 @@ async fn native_route_for_reserved_account(
             "Selected official authorization changed",
         ));
     }
+    if let Some(error) = native_pool_quota_floor_error(collection, &account, &upstream_model) {
+        return Err(error);
+    }
     if let Some(reserve) = quota_reserve_policy(collection, &account.id)
         .filter(|_| !native_is_chatgpt_plan_account(&account))
     {
@@ -2039,6 +2278,11 @@ async fn native_route_for_reserved_account(
                     .with_retry_after(Some(Duration::from_secs(5))),
             );
         }
+    }
+    if codex_account::is_workbuddy_upstream_provider(&account) {
+        // ACP owns its session/client lifecycle. Never feed its internal marker
+        // to HTTP URL validation, installation rewriting, or proxy URL setup.
+        return native_workbuddy::route(&account, &base_url, upstream_model, permit);
     }
     let chatgpt_plan = native_is_chatgpt_plan_account(&account);
     let chatgpt = !account.is_api_key_auth() && !chatgpt_plan;
@@ -2194,6 +2438,10 @@ fn native_chatgpt_plan_auxiliary_error(operation: &str) -> native_contract::Serv
 }
 
 fn native_auxiliary_eligible(account: &CodexAccount, operation: Option<&str>) -> bool {
+    if codex_account::is_workbuddy_upstream_provider(account) {
+        // The ACP MVP only implements stateless text Responses over HTTP/SSE.
+        return operation.is_none();
+    }
     if native_is_chatgpt_plan_account(account) {
         // A client Responses socket is bridged to public HTTP/SSE. It does not
         // grant access to any additional upstream endpoint or hosted tool.
@@ -2221,6 +2469,11 @@ fn native_operation_model(
     operation: Option<&str>,
     image_input: bool,
 ) -> Option<String> {
+    if codex_account::is_workbuddy_upstream_provider(account) && image_input {
+        // Do not let generic provider vision fallback silently strip images
+        // before the text-only ACP executor can enforce its capability limit.
+        return None;
+    }
     let provider_search_model = operation == Some("search") && account.is_api_key_auth();
     // Only the existing OAuth search accepts an omitted model. A provider
     // could otherwise choose an upstream default outside the caller's scope.
@@ -2247,7 +2500,7 @@ fn native_operation_model(
             model
         };
         return if native_is_chatgpt_plan_account(account) {
-            native_chatgpt_plan_model(account, &model)
+            native_chatgpt_plan_model(&plan.codex_catalog, account, &model)
         } else {
             Some(model)
         };
@@ -2295,20 +2548,19 @@ fn native_append_image_models(
         .filter(|account| image_ids.contains(&account.id) && native_eligible(account))
     {
         let family = &collection.image_generation_model;
-        if !native_image_source_allowed(collection, account, family)
-            || !native_image_model_allowed(collection, key, account, family)
-        {
-            continue;
-        }
-        let Some(actual) = native_image_source_model(collection, account, family) else {
-            continue;
-        };
+        let source_models = image_api_model_ids(account);
+        let explicit_models = source_models
+            .iter()
+            .map(String::as_str)
+            .filter(|model| image_model_matches_selection(model, family));
         let compatibility_name = (family.trim() == "gpt-image-2.5").then_some("gpt-image-2");
-        for model in [family.as_str(), actual.as_str()]
-            .into_iter()
+        for model in std::iter::once(family.as_str())
+            .chain(explicit_models)
             .chain(compatibility_name)
         {
-            if !native_image_model_allowed(collection, key, account, model) {
+            if !native_image_source_allowed(collection, account, model)
+                || !native_image_model_allowed(collection, key, account, model)
+            {
                 continue;
             }
             let exposed = key
@@ -2346,6 +2598,48 @@ pub(crate) use native_chatgpt_plan_tests::assert_chatgpt_plan_mixed_key_real_hos
 #[cfg(test)]
 mod native_image_catalog_tests {
     use super::*;
+
+    #[test]
+    fn native_image_catalog_includes_a_key_allowed_variant_even_when_default_is_excluded() {
+        let mut collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true, "port": 1455, "apiKey": "fixture", "accountIds": [],
+            "createdAt": 1, "updatedAt": 1, "imageGenerationModel": "gpt-image-2.5",
+            "imageGenerationAccountIds": ["image"],
+            "imageGenerationAccountModels": {"image": "gpt-image-2.5-flare"}
+        }))
+        .unwrap();
+        collection.excluded_models.push("gpt-image-2.5".into());
+        let account = CodexAccount::new_api_key(
+            "image".into(),
+            "test@example.invalid".into(),
+            "token".into(),
+            CodexApiProviderMode::Custom,
+            Some("https://example.invalid/v1".into()),
+            None,
+            None,
+            vec![
+                "gpt-image-2.5-flare".into(),
+                "gpt-image-2.5-sunburst".into(),
+                "gpt-image-2-flare".into(),
+            ],
+        );
+        let key: CodexLocalAccessApiKey = serde_json::from_value(json!({
+            "id":"key", "label":"key", "key":"fixture-key", "modelPrefix":"team",
+            "allowedModels":["gpt-image-2.5-sunburst", "gpt-image-2-flare"]
+        }))
+        .unwrap();
+        let mut catalog = json!({"data":[]});
+        native_append_image_models(&mut catalog, &collection, Some(&key), &[account.clone()]);
+        assert_eq!(catalog["data"].as_array().unwrap().len(), 1);
+        assert_eq!(catalog["data"][0]["id"], "team/gpt-image-2.5-sunburst");
+
+        collection
+            .image_generation_deleted_models
+            .push("gpt-image-2.5-sunburst".into());
+        let mut catalog = json!({"data":[]});
+        native_append_image_models(&mut catalog, &collection, Some(&key), &[account]);
+        assert_eq!(catalog["data"], json!([]));
+    }
     #[test]
     fn native_image_catalog_respects_source_and_model_permissions() {
         let mut collection:CodexLocalAccessCollection=serde_json::from_value(json!({"enabled":true,"port":1455,"apiKey":"fixture","accountIds":[],"createdAt":1,"updatedAt":1})).unwrap();

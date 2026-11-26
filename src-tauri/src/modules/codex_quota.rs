@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 // 使用 wham/usage 端点（Quotio 使用的）
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const PROFILE_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/profiles/me";
 const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const RESET_CREDITS_CONSUME_URL: &str =
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
@@ -289,9 +290,9 @@ pub(super) fn has_confirmed_free_subscription(account: &CodexAccount) -> bool {
 }
 
 #[derive(Debug, Clone)]
-struct AccountCheckRecord {
-    key: Option<String>,
-    node: serde_json::Value,
+pub(crate) struct AccountCheckRecord {
+    pub(crate) key: Option<String>,
+    pub(crate) node: serde_json::Value,
 }
 
 fn now_timestamp() -> i64 {
@@ -495,7 +496,7 @@ pub(crate) fn parse_subscription_timestamp(raw: &str) -> Option<i64> {
 
     if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
         let mut timestamp = trimmed.parse::<i64>().ok()?;
-        if timestamp > 1_000_000_000_000 {
+        if timestamp >= 1_000_000_000_000 {
             timestamp /= 1000;
         }
         return Some(timestamp);
@@ -528,7 +529,9 @@ fn extract_account_record_field(
     None
 }
 
-fn collect_subscription_account_records(payload: &serde_json::Value) -> Vec<AccountCheckRecord> {
+pub(crate) fn collect_subscription_account_records(
+    payload: &serde_json::Value,
+) -> Vec<AccountCheckRecord> {
     let mut records = Vec::new();
 
     if let Some(accounts_value) = payload.get("accounts") {
@@ -569,7 +572,7 @@ fn collect_subscription_account_records(payload: &serde_json::Value) -> Vec<Acco
     records
 }
 
-fn account_check_record_parts(
+pub(crate) fn account_check_record_parts(
     item: &AccountCheckRecord,
 ) -> Option<(
     &serde_json::Map<String, serde_json::Value>,
@@ -586,18 +589,33 @@ fn account_check_record_parts(
     Some((account_record, entitlement))
 }
 
-fn account_check_record_plan_type(item: &AccountCheckRecord) -> Option<String> {
+pub(crate) fn account_check_record_plan_type(item: &AccountCheckRecord) -> Option<String> {
     let (account_record, entitlement) = account_check_record_parts(item)?;
     entitlement
         .and_then(|value| extract_account_record_field(value, &["subscription_plan"]))
         .or_else(|| extract_account_record_field(account_record, &["plan_type", "planType"]))
 }
 
-fn account_check_record_is_default(item: &AccountCheckRecord) -> bool {
+pub(crate) fn account_check_record_is_default(item: &AccountCheckRecord) -> bool {
     account_check_record_parts(item)
         .and_then(|(account_record, _)| account_record.get("is_default"))
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
+}
+
+fn account_check_workspace_id(
+    item: &AccountCheckRecord,
+    expected_account_id: Option<&str>,
+) -> Option<String> {
+    let (record, _) = account_check_record_parts(item)?;
+    extract_account_record_field(record, &["account_id", "id", "chatgpt_account_id", "workspace_id"])
+        .or_else(|| {
+            // The map can be keyed by organization as well as workspace. Use
+            // its key as a workspace ID only when it matches the known ID.
+            expected_account_id
+                .filter(|expected| item.key.as_deref().map(str::trim) == Some(*expected))
+                .map(str::to_owned)
+        })
 }
 
 fn parse_account_check_snapshot(
@@ -631,18 +649,9 @@ fn parse_account_check_snapshot(
         .iter()
         .find(|item| organization_matches(item))
         .or_else(|| {
+            let preferred = preferred_account_id.as_deref()?;
             records.iter().find(|item| {
-                let Some(preferred) = preferred_account_id.as_deref() else {
-                    return false;
-                };
-                let Some((account_record, _)) = account_check_record_parts(item) else {
-                    return false;
-                };
-                let candidate_id = extract_account_record_field(
-                    account_record,
-                    &["account_id", "id", "chatgpt_account_id", "workspace_id"],
-                );
-                candidate_id.as_deref() == Some(preferred)
+                account_check_workspace_id(item, Some(preferred)).as_deref() == Some(preferred)
             })
         })
         .or_else(|| {
@@ -659,22 +668,9 @@ fn parse_account_check_snapshot(
         .or_else(|| records.first())
         .ok_or_else(|| "accounts/check 返回里没有可用账号".to_string())?;
 
-    let record = selected
-        .node
-        .as_object()
+    let (account_record, entitlement) = account_check_record_parts(selected)
         .ok_or_else(|| "accounts/check 账号记录格式不正确".to_string())?;
-    let account_record = record
-        .get("account")
-        .and_then(|value| value.as_object())
-        .unwrap_or(record);
-    let entitlement = record
-        .get("entitlement")
-        .and_then(|value| value.as_object());
-
-    let account_id = extract_account_record_field(
-        account_record,
-        &["account_id", "id", "chatgpt_account_id", "workspace_id"],
-    );
+    let account_id = account_check_workspace_id(selected, preferred_account_id.as_deref());
     if preferred_account_id.is_some()
         && account_id != preferred_account_id
         && !organization_matches(selected)
@@ -688,8 +684,8 @@ fn parse_account_check_snapshot(
         });
     }
     let subscription_active_until = entitlement
-        .and_then(|value| extract_account_record_field(value, &["expires_at"]))
-        .or_else(|| extract_account_record_field(account_record, &["expires_at"]));
+        .and_then(|value| extract_subscription_expiry(value, &["expires_at"]))
+        .or_else(|| extract_subscription_expiry(account_record, &["expires_at"]));
     let account_plan = extract_account_record_field(account_record, &["plan_type", "planType"]);
     let entitlement_plan =
         entitlement.and_then(|value| extract_account_record_field(value, &["subscription_plan"]));
@@ -711,22 +707,28 @@ fn parse_account_check_snapshot(
     })
 }
 
+fn extract_subscription_expiry(
+    record: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| normalize_optional_json_scalar(record.get(*key)))
+        .find(|value| parse_subscription_timestamp(value).is_some())
+}
+
 fn parse_subscription_snapshot(
     payload: &serde_json::Value,
     fallback_account_id: &str,
 ) -> SubscriptionStatusSnapshot {
+    let record = payload.as_object();
     SubscriptionStatusSnapshot {
         account_id: normalize_optional_ref(Some(fallback_account_id)),
-        plan_type: normalize_optional_json_scalar(
-            payload
-                .get("subscription_plan")
-                .or_else(|| payload.get("plan_type")),
-        ),
-        subscription_active_until: normalize_optional_json_scalar(
-            payload
-                .get("active_until")
-                .or_else(|| payload.get("expires_at")),
-        ),
+        plan_type: record.and_then(|record| {
+            extract_account_record_field(record, &["subscription_plan", "plan_type"])
+        }),
+        subscription_active_until: record.and_then(|record| {
+            extract_subscription_expiry(record, &["active_until", "expires_at"])
+        }),
     }
 }
 
@@ -874,16 +876,28 @@ async fn fetch_subscriptions_snapshot(
 async fn fetch_subscription_status_snapshot(
     account: &CodexAccount,
 ) -> Result<SubscriptionStatusSnapshot, String> {
-    let mut snapshot = fetch_subscription_account_check(account).await?;
+    let snapshot = fetch_subscription_account_check(account).await?;
+    resolve_subscription_status_snapshot(account, snapshot, async |account_id| {
+        fetch_subscriptions_snapshot(account, account_id).await
+    })
+    .await
+}
 
+async fn resolve_subscription_status_snapshot(
+    account: &CodexAccount,
+    mut snapshot: SubscriptionStatusSnapshot,
+    fetch_subscriptions: impl AsyncFnOnce(&str) -> Result<SubscriptionStatusSnapshot, String>,
+) -> Result<SubscriptionStatusSnapshot, String> {
     // The account check can confirm a downgrade to Free while the paid
     // subscriptions endpoint no longer accepts the same access token.
-    if snapshot.is_free_without_active_subscription()
-        || !subscription_missing_or_expired(snapshot.subscription_active_until.as_deref())
-    {
+    if snapshot.is_free_without_active_subscription() {
         return Ok(snapshot);
     }
 
+    // A future entitlement date can differ from the end of the paid
+    // subscription. Prefer the workspace's subscription record when available.
+    let has_active_entitlement =
+        !subscription_missing_or_expired(snapshot.subscription_active_until.as_deref());
     let account_id = snapshot
         .account_id
         .clone()
@@ -892,17 +906,30 @@ async fn fetch_subscription_status_snapshot(
             codex_account::extract_chatgpt_account_id_from_access_token(
                 &account.tokens.access_token,
             )
-        })
-        .ok_or_else(|| "未获取到 account_id，无法请求 subscriptions".to_string())?;
+        });
+    let Some(account_id) = account_id else {
+        return if has_active_entitlement {
+            Ok(snapshot)
+        } else {
+            Err("未获取到 account_id，无法请求 subscriptions".to_string())
+        };
+    };
 
-    let subscriptions = fetch_subscriptions_snapshot(account, &account_id).await?;
+    let subscriptions = match fetch_subscriptions(&account_id).await {
+        Ok(subscriptions) => subscriptions,
+        Err(_) if has_active_entitlement => {
+            logger::log_warn("Codex 订阅明细查询失败，使用本次账号检查的有效期");
+            return Ok(snapshot);
+        }
+        Err(error) => return Err(error),
+    };
     snapshot.account_id = Some(account_id);
-    if subscriptions.plan_type.is_some() {
-        snapshot.plan_type = subscriptions.plan_type;
+    if !has_active_entitlement {
+        snapshot.plan_type = subscriptions.plan_type.or(snapshot.plan_type);
     }
-    if subscriptions.subscription_active_until.is_some() {
-        snapshot.subscription_active_until = subscriptions.subscription_active_until;
-    }
+    snapshot.subscription_active_until = subscriptions
+        .subscription_active_until
+        .or(snapshot.subscription_active_until);
     Ok(snapshot)
 }
 
@@ -962,6 +989,14 @@ async fn refresh_account_tokens(account: &mut CodexAccount, reason: &str) -> Res
 
 /// 查询单个账号的配额
 pub async fn fetch_quota(account: &CodexAccount) -> Result<FetchQuotaResult, String> {
+    fetch_quota_at(account, USAGE_URL, false).await
+}
+
+async fn fetch_quota_at(
+    account: &CodexAccount,
+    usage_url: &str,
+    import_preview: bool,
+) -> Result<FetchQuotaResult, String> {
     use crate::modules::codex_device_restrictions as restrictions;
     let observation_started = restrictions::now();
     let account_id = account.account_id.clone().or_else(|| {
@@ -970,7 +1005,7 @@ pub async fn fetch_quota(account: &CodexAccount) -> Result<FetchQuotaResult, Str
 
     logger::log_info(&format!(
         "Codex 配额请求: {} (account_id: {:?})",
-        USAGE_URL, account_id
+        usage_url, account_id
     ));
     crate::modules::codex_auth_diagnostic::log_event(
         "quota_request_start",
@@ -983,7 +1018,15 @@ pub async fn fetch_quota(account: &CodexAccount) -> Result<FetchQuotaResult, Str
         }),
     );
 
-    let response = send_codex_api_request(account, Method::GET, USAGE_URL, None).await?;
+    let response = send_codex_api_request_with_agent_auth_base_url(
+        account,
+        Method::GET,
+        usage_url,
+        None,
+        codex_agent_identity::AGENT_IDENTITY_AUTH_API_BASE_URL,
+        import_preview,
+    )
+    .await?;
     let status = response.status;
     let headers = response.headers;
     let body = response.body;
@@ -995,7 +1038,7 @@ pub async fn fetch_quota(account: &CodexAccount) -> Result<FetchQuotaResult, Str
 
     logger::log_info(&format!(
         "Codex 配额响应元信息: url={}, status={}, request-id={}, x-request-id={}, cf-ray={}, body_len={}",
-        USAGE_URL, status, request_id, x_request_id, cf_ray, body_len
+        usage_url, status, request_id, x_request_id, cf_ray, body_len
     ));
 
     if !status.is_success() {
@@ -1023,7 +1066,7 @@ pub async fn fetch_quota(account: &CodexAccount) -> Result<FetchQuotaResult, Str
 
         logger::log_error(&format!(
             "Codex 配额接口返回非成功状态: url={}, status={}, request-id={}, x-request-id={}, cf-ray={}, detail_code={:?}, body_len={}, body={}",
-            USAGE_URL,
+            usage_url,
             status,
             request_id,
             x_request_id,
@@ -1129,6 +1172,11 @@ fn parse_quota_from_usage(usage: &UsageResponse, raw_body: &str) -> Result<Codex
 }
 
 fn is_new_api_account(account: &CodexAccount) -> bool {
+    // Older WorkBuddy links carry the generic Cockpit Api plan label, but
+    // their credentials and credits do not belong to the relay quota API.
+    if codex_account::is_workbuddy_upstream_provider(account) {
+        return false;
+    }
     account
         .api_provider_id
         .as_deref()
@@ -1162,6 +1210,25 @@ pub(crate) fn account_relay_balance_disabled(account: &CodexAccount) -> bool {
 
 pub fn supports_quota_refresh(account: &CodexAccount) -> bool {
     !account.is_api_key_auth() || (is_new_api_account(account) && !relay_balance_disabled())
+}
+
+// Manual refresh remains a successful no-op for this provider. Explicit
+// presence flags mean callers cannot interpret zeroes as exhausted windows.
+fn workbuddy_quota_unavailable() -> CodexQuota {
+    CodexQuota {
+        hourly_percentage: 0,
+        hourly_reset_time: None,
+        hourly_window_minutes: None,
+        hourly_window_present: Some(false),
+        weekly_percentage: 0,
+        weekly_reset_time: None,
+        weekly_window_minutes: None,
+        weekly_window_present: Some(false),
+        reset_credits_available: None,
+        reset_credits: Vec::new(),
+        reset_credits_next_expires_at: None,
+        raw_data: None,
+    }
 }
 
 fn normalize_api_base_url_for_match(raw: Option<&str>) -> Option<String> {
@@ -1394,6 +1461,40 @@ struct CodexApiResponse {
     body: String,
 }
 
+pub(crate) async fn fetch_profile_lifetime_tokens(account: &CodexAccount) -> Result<Option<u64>, String> {
+    fetch_profile_lifetime_tokens_at(account, PROFILE_USAGE_URL).await
+}
+
+async fn fetch_profile_lifetime_tokens_at(
+    account: &CodexAccount,
+    url: &str,
+) -> Result<Option<u64>, String> {
+    if account.is_api_key_auth()
+        || account.is_agent_identity_auth()
+        || account.is_web_session_auth()
+        || codex_account::is_pending_oauth_account(account)
+        || account.tokens.access_token.trim().is_empty()
+    {
+        return Err("CODEX_PROFILE_USAGE_OAUTH_REQUIRED".into());
+    }
+
+    let response = send_codex_api_request(account, Method::GET, url, None).await?;
+    if !response.status.is_success() {
+        return Err(format!("CODEX_PROFILE_USAGE_HTTP_{}", response.status.as_u16()));
+    }
+    #[derive(Deserialize)]
+    struct ProfileUsage {
+        stats: Option<ProfileUsageStats>,
+    }
+    #[derive(Deserialize)]
+    struct ProfileUsageStats {
+        lifetime_tokens: Option<u64>,
+    }
+    let profile: ProfileUsage = serde_json::from_str(&response.body)
+        .map_err(|_| "CODEX_PROFILE_USAGE_INVALID_RESPONSE".to_string())?;
+    Ok(profile.stats.and_then(|stats| stats.lifetime_tokens))
+}
+
 async fn send_codex_api_request(
     account: &CodexAccount,
     method: Method,
@@ -1406,6 +1507,7 @@ async fn send_codex_api_request(
         url,
         json_body,
         codex_agent_identity::AGENT_IDENTITY_AUTH_API_BASE_URL,
+        false,
     )
     .await
 }
@@ -1416,12 +1518,19 @@ async fn send_codex_api_request_with_agent_auth_base_url(
     url: &str,
     json_body: Option<&serde_json::Value>,
     agent_auth_base_url: &str,
+    import_preview: bool,
 ) -> Result<CodexApiResponse, String> {
     let account_id = account.account_id.clone().or_else(|| {
         codex_account::extract_chatgpt_account_id_from_access_token(&account.tokens.access_token)
     });
-    let client = crate::modules::codex_proxy_runtime::client_builder(account, reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))).await?
+    use crate::modules::codex_proxy_runtime;
+    let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20));
+    let builder = if import_preview {
+        codex_proxy_runtime::import_preview_client_builder(account, builder).await?
+    } else {
+        codex_proxy_runtime::client_builder(account, builder).await?
+    };
+    let client = builder
         .build()
         .map_err(|error| format!("创建 Codex 上游客户端失败: {}", error))?;
     let mut current = account.clone();
@@ -1481,7 +1590,7 @@ async fn send_codex_api_request_with_agent_auth_base_url(
     Err("Agent Identity task 恢复后请求仍失败".to_string())
 }
 
-async fn fetch_reset_credits(account: &CodexAccount) -> Result<CodexResetCreditsSnapshot, String> {
+pub(crate) async fn fetch_reset_credits(account: &CodexAccount) -> Result<CodexResetCreditsSnapshot, String> {
     if let Some(payload) = mock_reset_credits_payload() {
         logger::log_info("Codex reset credit 查询使用显式 mock JSON");
         return Ok(parse_reset_credits_snapshot(payload));
@@ -1792,6 +1901,10 @@ async fn refresh_account_quota_once(
             return Err(error);
         }
     };
+    if codex_account::is_workbuddy_upstream_provider(&account) {
+        codex_account::clear_workbuddy_codex_quota(&account)?;
+        return Ok(workbuddy_quota_unavailable());
+    }
     if account.is_api_key_auth() {
         if is_new_api_account(&account) {
             if account_relay_balance_disabled(&account) {
@@ -2038,8 +2151,15 @@ pub async fn refresh_freshly_authorized_account_quota(
 }
 
 pub async fn probe_import_account_quota(account: &CodexAccount) -> Result<CodexQuota, String> {
+    probe_import_account_quota_at(account, USAGE_URL).await
+}
+
+async fn probe_import_account_quota_at(account: &CodexAccount, usage_url: &str) -> Result<CodexQuota, String> {
+    if codex_account::is_workbuddy_upstream_provider(account) {
+        return Ok(workbuddy_quota_unavailable());
+    }
     if account.is_agent_identity_auth() {
-        return fetch_quota(account).await.map(|result| result.quota);
+        return fetch_quota_at(account, usage_url, true).await.map(|result| result.quota);
     }
     if account.is_api_key_auth() {
         if is_new_api_account(account) {
@@ -2057,7 +2177,7 @@ pub async fn probe_import_account_quota(account: &CodexAccount) -> Result<CodexQ
         return Err("access_token 已过期，无法在导入前查询额度".to_string());
     }
 
-    fetch_quota(account).await.map(|result| result.quota)
+    fetch_quota_at(account, usage_url, true).await.map(|result| result.quota)
 }
 
 pub async fn refresh_account_subscription_info(
@@ -2379,6 +2499,58 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn codex_profile_lifetime_tokens_uses_the_selected_oauth_and_exact_total() {
+        let _env_guard = crate::modules::test_support::env_lock().lock().unwrap();
+        let mut account = subscription_test_account();
+        account.id = format!("profile-usage-{}", uuid::Uuid::new_v4());
+        account.tokens.access_token = "synthetic-profile-oauth".into();
+        account.account_id = Some("selected-workspace".into());
+        account.egress_proxy_disabled = true;
+        crate::modules::codex_account::save_account(&account).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/backend-api/wham/profiles/me", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for (status, body) in [
+                ("200 OK", r#"{"stats":{"lifetime_tokens":630000000,"peak_daily_tokens":11}}"#),
+                ("200 OK", r#"{"stats":{"lifetime_tokens":0}}"#),
+                ("200 OK", r#"{"stats":{"lifetime_tokens":null,"peak_daily_tokens":11}}"#),
+                ("200 OK", r#"{"metadata":{"stats_error":"temporarily unavailable"}}"#),
+                ("401 Unauthorized", r#"{"error":"synthetic upstream body"}"#),
+                ("200 OK", r#"{"stats":{"lifetime_tokens":-7}}"#),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_test_http_request(&mut stream).await.to_ascii_lowercase();
+                assert!(request.starts_with("get /backend-api/wham/profiles/me http/"));
+                assert!(request.contains("authorization: bearer synthetic-profile-oauth\r\n"));
+                assert!(request.contains("chatgpt-account-id: selected-workspace\r\n"));
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        assert_eq!(super::fetch_profile_lifetime_tokens_at(&account, &url).await, Ok(Some(630_000_000)));
+        assert_eq!(super::fetch_profile_lifetime_tokens_at(&account, &url).await, Ok(Some(0)));
+        assert_eq!(super::fetch_profile_lifetime_tokens_at(&account, &url).await, Ok(None));
+        assert_eq!(super::fetch_profile_lifetime_tokens_at(&account, &url).await, Ok(None));
+        assert_eq!(
+            super::fetch_profile_lifetime_tokens_at(&account, &url).await,
+            Err("CODEX_PROFILE_USAGE_HTTP_401".into())
+        );
+        assert_eq!(
+            super::fetch_profile_lifetime_tokens_at(&account, &url).await,
+            Err("CODEX_PROFILE_USAGE_INVALID_RESPONSE".into())
+        );
+        server.await.unwrap();
+        account.auth_mode = crate::models::codex::CodexAuthMode::Apikey;
+        assert_eq!(
+            super::fetch_profile_lifetime_tokens_at(&account, &url).await,
+            Err("CODEX_PROFILE_USAGE_OAUTH_REQUIRED".into())
+        );
+    }
+
     #[test]
     fn quota_sync_rejects_an_upstream_identity_mismatch() {
         let mut account = subscription_test_account();
@@ -2690,6 +2862,34 @@ mod tests {
     }
 
     #[test]
+    fn subscription_account_check_reads_team_entitlement_from_workspace_key() {
+        let mut account = subscription_test_account();
+        account.account_id = Some("workspace-team".into());
+        account.plan_type = Some("free".into());
+        let snapshot = parse_account_check_snapshot(
+            &json!({
+                "account_ordering": ["personal", "workspace-team"],
+                "accounts": {
+                    "personal": {
+                        "account": {"account_id":"personal", "plan_type":"free", "is_default":true}
+                    },
+                    "workspace-team": {
+                        "account": {"plan_type":"team"},
+                        "entitlement": {"subscription_plan":"team", "expires_at":"2099-06-01T00:00:00Z"}
+                    }
+                }
+            }),
+            &account,
+        ).unwrap();
+        assert_eq!(snapshot.account_id.as_deref(), Some("workspace-team"));
+        assert_eq!(snapshot.plan_type.as_deref(), Some("team"));
+        assert_eq!(snapshot.subscription_active_until.as_deref(), Some("2099-06-01T00:00:00Z"));
+
+        super::apply_subscription_snapshot(&mut account, snapshot);
+        assert_eq!(account.plan_type.as_deref(), Some("team"));
+    }
+
+    #[test]
     fn subscription_lookup_does_not_use_another_workspaces_expiry() {
         let mut account = subscription_test_account();
         account.account_id = Some("target".into());
@@ -2711,7 +2911,137 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_free_subscription_needs_no_paid_lookup_and_keeps_oauth() {
+    fn subscription_account_check_prefers_explicit_workspace_id_over_conflicting_key() {
+        let mut account = subscription_test_account();
+        account.account_id = Some("target".into());
+        let snapshot = parse_account_check_snapshot(
+            &json!({"accounts": {"target": {
+                "account": {"account_id":"other", "plan_type":"team"},
+                "entitlement": {"subscription_plan":"team", "expires_at":"2099-06-01T00:00:00Z"}
+            }}}),
+            &account,
+        ).unwrap();
+        assert_eq!(snapshot.account_id.as_deref(), Some("target"));
+        assert_eq!(snapshot.plan_type, None);
+        assert_eq!(snapshot.subscription_active_until, None);
+    }
+
+    #[test]
+    fn subscriptions_use_the_first_valid_expiry_and_plan_fields() {
+        for inactive_field in [serde_json::Value::Null, json!(""), json!("invalid")] {
+            let snapshot = super::parse_subscription_snapshot(
+                &json!({
+                    "subscription_plan": null,
+                    "plan_type": "plus",
+                    "active_until": inactive_field,
+                    "expires_at": 1_900_000_000_000_i64
+                }),
+                "target",
+            );
+            let mut account = subscription_test_account();
+            account.subscription_active_until = Some("2000-01-01T00:00:00Z".into());
+            super::apply_subscription_snapshot(&mut account, snapshot);
+            assert_eq!(
+                account.subscription_active_until.as_deref(),
+                Some("1900000000000")
+            );
+            assert_eq!(account.plan_type.as_deref(), Some("plus"));
+            assert!(account.subscription_query_last_success_at.is_some());
+        }
+
+        let snapshot = super::parse_subscription_snapshot(
+            &json!({"active_until":"2030-01-01T08:00:00+08:00","expires_at":"2031-01-01T00:00:00Z"}),
+            "target",
+        );
+        assert_eq!(
+            snapshot.subscription_active_until.as_deref(),
+            Some("2030-01-01T08:00:00+08:00")
+        );
+    }
+
+    #[test]
+    fn subscription_account_check_uses_account_expiry_when_entitlement_expiry_is_invalid() {
+        let mut account = subscription_test_account();
+        account.account_id = Some("target".into());
+        let snapshot = parse_account_check_snapshot(
+            &json!({"accounts": {"target": {
+                "account": {"account_id":"target", "plan_type":"plus", "expires_at":"2030-01-01T08:00:00+08:00"},
+                "entitlement": {"subscription_plan":"plus", "expires_at":"invalid"}
+            }}}),
+            &account,
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot.subscription_active_until.as_deref(),
+            Some("2030-01-01T08:00:00+08:00")
+        );
+    }
+
+    #[tokio::test]
+    async fn subscription_details_override_a_later_entitlement_expiry() {
+        let mut account = subscription_test_account();
+        account.account_id = Some("target".into());
+        let now = chrono::Utc::now();
+        let paid_expiry = (now - chrono::Duration::hours(2)).to_rfc3339();
+        let entitlement_expiry = (now + chrono::Duration::hours(6)).to_rfc3339();
+        let snapshot = parse_account_check_snapshot(
+            &json!({"accounts": {"target": {
+                "account": {"account_id":"target", "plan_type":"plus"},
+                "entitlement": {"subscription_plan":"plus", "expires_at": entitlement_expiry}
+            }}}),
+            &account,
+        )
+        .unwrap();
+        let snapshot =
+            super::resolve_subscription_status_snapshot(&account, snapshot, async |id| {
+                assert_eq!(id, "target");
+                Ok(super::parse_subscription_snapshot(
+                    &json!({"subscription_plan":"plus", "active_until": paid_expiry}),
+                    id,
+                ))
+            })
+            .await
+            .unwrap();
+
+        super::apply_subscription_snapshot(&mut account, snapshot);
+        assert_eq!(
+            account.subscription_active_until.as_deref(),
+            Some(paid_expiry.as_str())
+        );
+        assert!(super::subscription_missing_or_expired(
+            account.subscription_active_until.as_deref()
+        ));
+        assert!(account.subscription_query_last_success_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn unavailable_subscription_details_keep_a_usable_account_check_expiry() {
+        let mut account = subscription_test_account();
+        account.account_id = Some("target".into());
+        let snapshot = parse_account_check_snapshot(
+            &json!({"accounts": {"target": {
+                "account": {"account_id":"target", "plan_type":"team"},
+                "entitlement": {"subscription_plan":"team", "expires_at":"2099-01-01T00:00:00Z"}
+            }}}),
+            &account,
+        )
+        .unwrap();
+        let snapshot =
+            super::resolve_subscription_status_snapshot(&account, snapshot, async |_| {
+                Err("subscription endpoint forbidden".into())
+            })
+            .await
+            .unwrap();
+
+        super::apply_subscription_snapshot(&mut account, snapshot);
+        assert_eq!(
+            account.subscription_active_until.as_deref(),
+            Some("2099-01-01T00:00:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_free_subscription_needs_no_paid_lookup_and_keeps_oauth() {
         for entitlement in [
             serde_json::Value::Null,
             json!({"subscription_plan":"plus","expires_at":"2000-01-01T00:00:00Z"}),
@@ -2732,6 +3062,12 @@ mod tests {
             )
             .unwrap();
             assert!(snapshot.is_free_without_active_subscription());
+            let snapshot =
+                super::resolve_subscription_status_snapshot(&account, snapshot, async |_| {
+                    panic!("a confirmed Free account does not need the subscription endpoint");
+                })
+                .await
+                .unwrap();
             super::apply_subscription_snapshot(&mut account, snapshot);
             assert_eq!(account.plan_type.as_deref(), Some("free"));
             assert!(account.subscription_active_until.is_none());
@@ -2797,6 +3133,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn import_quota_probes_an_unsaved_oauth_account() {
+        let account = CodexAccount::new(
+            format!("quota-import-{}", uuid::Uuid::new_v4()),
+            "import@example.com".into(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: "at-synthetic-import-test".into(),
+                refresh_token: None,
+            },
+        );
+        assert!(crate::modules::codex_account_proxy::eligible(&account));
+        assert!(crate::modules::codex_account::load_account(&account.id).is_none());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let usage_url = format!("http://{}/usage", listener.local_addr().unwrap());
+        assert!(matches!(
+            super::fetch_quota_at(&account, &usage_url, false).await,
+            Err(error) if error == "PROXY_ACCOUNT_UNSUPPORTED"
+        ));
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_test_http_request(&mut stream).await;
+            assert!(request.starts_with("GET /usage HTTP/1.1"));
+            assert!(request.contains("Bearer at-synthetic-import-test"));
+            let body = r#"{"rate_limit":{"primary_window":{"used_percent":23}}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let quota = super::probe_import_account_quota_at(&account, &usage_url)
+            .await
+            .expect("probe quota before saving the account");
+        assert_eq!(quota.hourly_percentage, 77);
+        server.await.unwrap();
+        assert!(crate::modules::codex_account::load_account(&account.id).is_none());
+    }
+
+    #[tokio::test]
     async fn agent_identity_quota_request_uses_common_headers_and_recovers_task_once() {
         let account = agent_identity_test_account();
         let headers = build_codex_api_headers(&account, account.account_id.as_deref())
@@ -2859,6 +3236,7 @@ mod tests {
             &format!("{base_url}/usage"),
             None,
             &base_url,
+            false,
         )
         .await
         .expect("recover task and retry quota request");
@@ -2895,6 +3273,195 @@ mod tests {
                 && !lower.contains("referer:")
                 && !lower.contains("sec-fetch-site:")
         }));
+    }
+}
+
+#[cfg(test)]
+mod workbuddy_quota_tests {
+    use super::*;
+    use crate::models::codex::{CodexApiProviderMode, CodexTokens};
+
+    struct Storage {
+        _directory: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Storage {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let previous = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+            std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", directory.path());
+            Self {
+                _directory: directory,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for Storage {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(previous) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", previous),
+                None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+            }
+        }
+    }
+
+    fn linked_account() -> CodexAccount {
+        let mut account = CodexAccount::new_api_key(
+            format!("workbuddy-quota-{}", uuid::Uuid::new_v4()),
+            "fixture@example.invalid".into(),
+            String::new(),
+            CodexApiProviderMode::Custom,
+            Some(codex_account::WORKBUDDY_ACP_BASE_URL.into()),
+            Some("workbuddy_acp".into()),
+            Some("WorkBuddy".into()),
+            vec!["workbuddy-default".into()],
+        );
+        account.openai_api_key = None;
+        account.api_credential_kind = Some("workbuddy_acp".into());
+        account.api_credential_ref = Some("fixture-source".into());
+        account.plan_type = Some("Cockpit Api".into());
+        account
+    }
+
+    fn stale_quota(account: &mut CodexAccount) {
+        account.quota = Some(
+            serde_json::from_value(json!({
+                "hourly_percentage": 83,
+                "weekly_percentage": 41,
+                "raw_data": {"provider_usage": {"credits": 123}}
+            }))
+            .unwrap(),
+        );
+        account.quota_error = Some(CodexQuotaErrorInfo {
+            code: None,
+            message: "Cockpit Api 账号缺少 OPENAI_API_KEY".into(),
+            timestamp: 1,
+        });
+        account.usage_updated_at = Some(1);
+        account.team_quota_history = Some(
+            serde_json::from_value(json!({
+                "user_id": "old-user", "account_id": "old-workspace", "observed_at": 1,
+                "hourly_percentage": 83, "weekly_percentage": 41
+            }))
+            .unwrap(),
+        );
+    }
+
+    fn assert_no_windows(quota: &CodexQuota) {
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_window_present, Some(false));
+        assert!(quota.hourly_reset_time.is_none());
+        assert!(quota.weekly_reset_time.is_none());
+        assert!(quota.hourly_window_minutes.is_none());
+        assert!(quota.weekly_window_minutes.is_none());
+        assert!(quota.reset_credits_available.is_none());
+        assert!(quota.reset_credits.is_empty());
+        assert!(quota.raw_data.is_none());
+    }
+
+    #[test]
+    fn workbuddy_legacy_cockpit_plan_is_not_relay_quota() {
+        let mut account = linked_account();
+        assert!(!is_new_api_account(&account));
+        assert!(!supports_quota_refresh(&account));
+        assert!(!account_relay_balance_disabled(&account));
+        account.plan_type = Some("WorkBuddy".into());
+        assert!(!is_new_api_account(&account));
+        assert!(!supports_quota_refresh(&account));
+    }
+
+    #[test]
+    fn workbuddy_exclusion_preserves_ordinary_relay_and_oauth_classification() {
+        let mut relay = linked_account();
+        relay.api_credential_kind = None;
+        relay.api_credential_ref = None;
+        relay.api_base_url = Some("https://relay.example.invalid/v1".into());
+        relay.api_provider_id = Some("custom".into());
+        assert!(is_new_api_account(&relay));
+        relay.plan_type = None;
+        relay.api_provider_id = Some("new_api".into());
+        assert!(is_new_api_account(&relay));
+        relay.api_provider_id = Some("cockpit_api".into());
+        assert!(is_new_api_account(&relay));
+        relay.api_provider_id = Some("custom".into());
+        assert!(!is_new_api_account(&relay));
+        let oauth = CodexAccount::new(
+            "oauth-fixture".into(),
+            "fixture@example.invalid".into(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: String::new(),
+                refresh_token: None,
+            },
+        );
+        assert!(supports_quota_refresh(&oauth));
+    }
+
+    #[tokio::test]
+    async fn workbuddy_manual_refresh_clears_stale_quota_without_openai_key() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _storage = Storage::new();
+        let mut account = linked_account();
+        stale_quota(&mut account);
+        codex_account::save_account(&account).unwrap();
+        let quota = refresh_account_quota_once(
+            &account.id,
+            &codex_account::CodexQuotaRuntimeSnapshot::empty(),
+        )
+        .await
+        .unwrap();
+        assert_no_windows(&quota);
+        let current = codex_account::load_account(&account.id).unwrap();
+        assert!(current.quota.is_none());
+        assert!(current.quota_error.is_none());
+        assert!(current.team_quota_history.is_none());
+        assert!(current.usage_updated_at.is_none());
+        assert!(current.openai_api_key.is_none());
+        assert_eq!(current.api_credential_ref, account.api_credential_ref);
+        assert_eq!(current.plan_type.as_deref(), Some("Cockpit Api"));
+    }
+
+    #[tokio::test]
+    async fn workbuddy_import_probe_has_no_codex_windows_or_network_dependency() {
+        let quota = probe_import_account_quota_at(&linked_account(), "invalid-fixture-url")
+            .await
+            .unwrap();
+        assert_no_windows(&quota);
+    }
+
+    #[test]
+    fn workbuddy_quota_cleanup_merges_metadata_and_rejects_rebound_accounts() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _storage = Storage::new();
+        let original = linked_account();
+        let mut current = original.clone();
+        stale_quota(&mut current);
+        current.account_note = Some("newer metadata".into());
+        current.egress_proxy_disabled = true;
+        codex_account::save_account(&current).unwrap();
+        codex_account::clear_workbuddy_codex_quota(&original).unwrap();
+        let current = codex_account::load_account(&original.id).unwrap();
+        assert!(current.quota.is_none());
+        assert!(current.quota_error.is_none());
+        assert_eq!(current.account_note.as_deref(), Some("newer metadata"));
+        assert!(current.egress_proxy_disabled);
+        let mut rebound = current;
+        stale_quota(&mut rebound);
+        rebound.api_credential_ref = Some("different-source".into());
+        codex_account::save_account(&rebound).unwrap();
+        assert_eq!(
+            codex_account::clear_workbuddy_codex_quota(&original).unwrap_err(),
+            "CODEX_STALE_QUOTA_REQUEST"
+        );
+        let current = codex_account::load_account(&original.id).unwrap();
+        assert!(current.quota.is_some());
+        assert!(current.quota_error.is_some());
     }
 }
 

@@ -2,6 +2,7 @@ import { CLI_PATH_LABELS, isCliPathApp, readCliLaunchPath, saveCliLaunchPath, ty
 import { APP_PATH_LABELS, INSTANCE_START_COMMANDS, LAUNCH_ONLY_COMMANDS, isLaunchPathApp, readMissingLaunchPathApp, type LaunchPathApp } from './utils/appLaunchPath';
 import { useWorkbuddyAiAccountStore } from './stores/useWorkbuddyAiAccountStore';
 import { useZcodeAccountStore } from './stores/useZcodeAccountStore';
+import { useT3codeAccountStore } from './stores/useT3codeAccountStore';
 import { hydrateDurableUiSettings } from './utils/durableUiSettings';
 import { CodexAccountServiceHost } from './components/codex/CodexAccountServiceHost';
 import { AppBackground } from './components/AppBackground';
@@ -38,8 +39,8 @@ import { CodexPelicanHost } from './components/codex/pelican/CodexPelicanHost';
 import { AnnouncementHost } from './components/AnnouncementCenter';
 import { TopCenterPromoBanner } from './components/TopCenterPromoBanner';
 import type { QuickSettingsType } from './components/QuickSettingsPopover';
-import { requestCodexRequestLogsNavigation } from './utils/codexRequestLogsNavigation';
-import { isMainWindowNavigablePage, type Page } from './types/navigation';
+import { useMainWindowNavigation } from './hooks/useMainWindowNavigation';
+import type { Page } from './types/navigation';
 import type { TopRightAd } from './types/topRightAd';
 import { useAutoRefresh } from './hooks/useAutoRefresh';
 import { useCodexQuotaSync } from './hooks/useCodexQuotaSync';
@@ -115,6 +116,7 @@ import { prepareCodexLocalAccessForRestart } from './services/codexLocalAccessSe
 import { applyReducedMotion } from './utils/reducedMotion';
 import { initLocalTimeZone } from './utils/localTimeZone';
 import { isCodexInstanceAccountConflict } from './utils/codexInstanceLaunchConflict';
+import { resolveUpdateApplyFailureMessage, type UpdateApplyFailureStage } from './utils/updateApplyFailureMessage';
 import {
   applyWebviewUiScale,
   isUiScaleResetKey,
@@ -136,6 +138,11 @@ const DashboardPage = lazy(() =>
 );
 const AccountsPage = lazy(() =>
   import('./pages/AccountsPage').then((module) => ({ default: module.AccountsPage })),
+);
+const AntigravityTokenUsagePage = lazy(() =>
+  import('./pages/AntigravityTokenUsagePage').then((module) => ({
+    default: module.AntigravityTokenUsagePage,
+  })),
 );
 const CodexAccountsPage = lazy(() =>
   import('./pages/CodexAccountsPage').then((module) => ({ default: module.CodexAccountsPage })),
@@ -174,6 +181,9 @@ const QoderAccountsPage = lazy(() =>
 );
 const ZcodeAccountsPage = lazy(() =>
   import('./pages/ZcodeAccountsPage').then((module) => ({ default: module.ZcodeAccountsPage })),
+);
+const T3codeAccountsPage = lazy(() =>
+  import('./pages/T3codeAccountsPage').then((module) => ({ default: module.T3codeAccountsPage })),
 );
 const TraeAccountsPage = lazy(() =>
   import('./pages/TraeAccountsPage').then((module) => ({ default: module.TraeAccountsPage })),
@@ -237,6 +247,7 @@ const RENDERABLE_PAGE_VALUES: readonly Page[] = [
   'dashboard',
   'api-relay',
   'overview',
+  'antigravity-usage',
   'codex',
   'claude',
   'claude-cli',
@@ -250,6 +261,7 @@ const RENDERABLE_PAGE_VALUES: readonly Page[] = [
   'codebuddy-cn',
   'qoder',
   'zcode',
+  't3code',
   'trae',
   'trae-solo',
   'trae-cn',
@@ -270,6 +282,7 @@ const RENDERABLE_PAGE_SET = new Set<string>(RENDERABLE_PAGE_VALUES);
 const TOP_PROMO_DEFAULT_EXCLUDED_PAGES: readonly Page[] = ['api-relay', 'settings'];
 const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> = {
   overview: ['antigravity', 'antigravity-ide'],
+  'antigravity-usage': ['antigravity', 'antigravity-ide'],
   instances: ['antigravity', 'antigravity-ide'],
   wakeup: ['antigravity', 'antigravity-ide'],
   verification: ['antigravity', 'antigravity-ide'],
@@ -288,6 +301,7 @@ const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> 
   'codebuddy-cn': ['codebuddy-cn'],
   qoder: ['qoder'],
   zcode: ['zcode'],
+  t3code: ['t3code'],
   trae: ['trae', 'trae-suite'],
   'trae-solo': ['trae-solo', 'trae-suite'],
   'trae-cn': ['trae-cn', 'trae-suite'],
@@ -422,6 +436,7 @@ interface GeneralConfig extends GeneralConfigTheme, GeneralConfigLanguage {
   minimax_code_app_path: string;
   workbuddy_ai_app_path: string;
   zcode_app_path: string;
+  t3code_app_path: string;
   minimax_code_auto_refresh_minutes: number;
   minimax_code_region: string;
   minimax_code_quota_alert_enabled: boolean;
@@ -431,6 +446,7 @@ interface GeneralConfig extends GeneralConfigTheme, GeneralConfigLanguage {
 
 type AppPathMissingDetail = {
   pathRuntimeTarget?: string;
+  invalidWorkbuddyPath?: string;
   app: LaunchPathApp | CliPathApp;
   resume?: () => Promise<void>;
   cancel?: () => void;
@@ -761,7 +777,7 @@ function MainApp() {
   const sideNavClassicFirstSyncDone = useSideNavLayoutStore((state) => state.classicFirstSyncDone);
   const markSideNavClassicFirstSyncDone = useSideNavLayoutStore((state) => state.markClassicFirstSyncDone);
   const syncSidebarEntriesFromDashboard = usePlatformLayoutStore((state) => state.syncSidebarEntriesFromDashboard);
-  const [page, setPage] = useState<Page>(() => {
+  const [page, setCurrentPage] = useState<Page>(() => {
     try {
       const saved = normalizeStoredActivePage(localStorage.getItem(ACTIVE_PAGE_STORAGE_KEY));
       if (saved) {
@@ -771,6 +787,13 @@ function MainApp() {
     } catch {}
     return 'dashboard';
   });
+  const applyStartupPreference = useCallback((preference?: string) => {
+    const preferred = normalizeStartupPagePreference(preference);
+    const antigravityTarget = resolveAntigravityStartupTarget(preference);
+    if (antigravityTarget) setAntigravityRuntimeTarget(antigravityTarget);
+    if (preferred !== 'last') setCurrentPage(preferred);
+  }, []);
+  const setPage = useMainWindowNavigation(setCurrentPage, applyStartupPreference);
   const isCodexSuitePage = page === 'codex' || page === 'codex-api-service';
   const [codexSuiteKeepAlive, setCodexSuiteKeepAlive] = useState(isCodexSuitePage);
   const shouldMountCodexSuite = isCodexSuitePage || codexSuiteKeepAlive;
@@ -813,37 +836,12 @@ function MainApp() {
         localStorage.setItem(ACTIVE_PAGE_STORAGE_KEY, normalized);
       } else {
         localStorage.removeItem(ACTIVE_PAGE_STORAGE_KEY);
-        setPage('dashboard');
+        setCurrentPage('dashboard');
       }
     } catch (e) {
       console.warn('Failed to save active page to localStorage:', e);
     }
   }, [page]);
-
-  // 冷启动：若设置了固定启动页，则覆盖 localStorage 中的上次页面
-  useEffect(() => {
-    let disposed = false;
-    const applyStartupPagePreference = async () => {
-      try {
-        const config = await invoke<{ startup_page?: string }>('get_general_config');
-        if (disposed) {
-          return;
-        }
-        const preferred = normalizeStartupPagePreference(config.startup_page);
-        const antigravityTarget = resolveAntigravityStartupTarget(config.startup_page);
-        if (antigravityTarget) setAntigravityRuntimeTarget(antigravityTarget);
-        if (preferred !== 'last') {
-          setPage(preferred);
-        }
-      } catch (error) {
-        console.warn('Failed to apply startup page preference:', error);
-      }
-    };
-    void applyStartupPagePreference();
-    return () => {
-      disposed = true;
-    };
-  }, []);
 
   // 冷启动：根据用户配置自动恢复 Codex 代理接管状态
   useEffect(() => {
@@ -1314,7 +1312,7 @@ function MainApp() {
 
   useEffect(() => {
     if (sponsorModuleInitialized && page === 'api-relay' && !sponsorEntryVisible) {
-      setPage('dashboard');
+      setCurrentPage('dashboard');
     }
   }, [page, sponsorEntryVisible, sponsorModuleInitialized]);
 
@@ -1416,7 +1414,7 @@ function MainApp() {
   }, [t, writeUpdateLog]);
 
   const restoreCodexLocalAccessAfterRelaunchFailure = useCallback(async () => {
-    await invoke('codex_local_access_get_state').catch((error) => {
+    await invoke('codex_local_access_resume_after_failed_update').catch((error) => {
       writeUpdateLog(
         'warn',
         `应用重启失败后恢复 Codex API 服务状态失败: error=${sanitizeUpdaterErrorMessage(error)}`,
@@ -1675,7 +1673,7 @@ function MainApp() {
     const shouldInstall = updateAction.state === 'ready'
       ? updateAction.requiresInstall
       : Boolean(pendingSilentUpdateRef.current);
-    let failureStage: 'prepare' | 'install' | 'relaunch' = 'prepare';
+    let failureStage: UpdateApplyFailureStage = 'prepare';
     try {
       writeUpdateLog(
         'info',
@@ -1707,17 +1705,15 @@ function MainApp() {
         requiresInstall: false,
       });
       failureStage = 'relaunch';
-      const { relaunch } = await import('@tauri-apps/plugin-process');
-      await relaunch();
+      await invoke('relaunch_after_update');
     } catch (error) {
-      await restoreCodexLocalAccessAfterRelaunchFailure();
       console.error('[App] Failed to apply pending update:', error);
       const compactError = sanitizeUpdaterErrorMessage(error);
-      const errorMessage = failureStage === 'prepare'
-        ? t('update_notification.stopApiServiceFailed', '无法关闭 API 服务，请先停用后重试。')
-        : failureStage === 'install'
-          ? t('update_notification.installFailed', '系统安装失败，请稍后重试或手动下载安装。')
-          : t('update_notification.restartRequiredAfterInstall', '更新已安装，请手动重启应用完成切换。');
+      const errorMessage = resolveUpdateApplyFailureMessage(
+        t,
+        failureStage,
+        updateRuntimeInfo?.macos_translocated === true,
+      );
       setUpdateRetryStatus('');
       setUpdateDownloadError(errorMessage);
       setUpdateErrorDetails(compactError);
@@ -1725,6 +1721,7 @@ function MainApp() {
         'error',
         `用户手动应用更新失败: stage=${failureStage}, error=${compactError}`,
       );
+      await restoreCodexLocalAccessAfterRelaunchFailure();
       throw error;
     }
   }, [
@@ -1732,6 +1729,7 @@ function MainApp() {
     restoreCodexLocalAccessAfterRelaunchFailure,
     silentUpdateVersion,
     updateAction,
+    updateRuntimeInfo,
     t,
     writeUpdateLog,
   ]);
@@ -1774,10 +1772,8 @@ function MainApp() {
       try {
         await prepareCodexLocalAccessBeforeRelaunch();
         relaunchStage = 'relaunch';
-        const { relaunch } = await import('@tauri-apps/plugin-process');
-        await relaunch();
+        await invoke('relaunch_after_update');
       } catch (error) {
-        await restoreCodexLocalAccessAfterRelaunchFailure();
         const compactError = sanitizeUpdaterErrorMessage(error);
         console.error('[App] Linux managed update installed but relaunch failed:', error);
         writeUpdateLog(
@@ -1791,6 +1787,7 @@ function MainApp() {
             : t('update_notification.restartRequiredAfterInstall', '更新已安装，请手动重启应用完成切换。'),
         );
         setUpdateErrorDetails(compactError);
+        await restoreCodexLocalAccessAfterRelaunchFailure();
       }
     } catch (error) {
       console.error('[App] Linux managed update failed:', error);
@@ -3019,6 +3016,10 @@ function MainApp() {
         errorMessage: 'Failed to refresh ZCode:',
       },
       {
+        command: 'refresh_all_t3code_accounts',
+        errorMessage: 'Failed to refresh T3 Code:',
+      },
+      {
         command: 'refresh_all_trae_tokens',
         errorMessage: 'Failed to refresh Trae:',
       },
@@ -3204,9 +3205,11 @@ function MainApp() {
         return;
       }
       if (retry?.kind === 'switchAccount' && retry.accountId) {
-        const store = app === 'workbuddy_ai' ? useWorkbuddyAiAccountStore
+        const store = app === 'workbuddy' ? useWorkbuddyAccountStore
+          : app === 'workbuddy_ai' ? useWorkbuddyAiAccountStore
           : app === 'minimaxcode' ? useMinimaxCodeAccountStore
           : app === 'zcode' ? useZcodeAccountStore
+          : app === 't3code' ? useT3codeAccountStore
           : app === 'qoder' ? useQoderAccountStore
           : app === 'claude' ? useClaudeAccountStore
           : app === 'zed' ? useZedAccountStore : undefined;
@@ -3349,48 +3352,12 @@ function MainApp() {
     };
   }, []);
 
-  // After tray destroy/recreate (#686), apply any deferred navigation.
-  useEffect(() => {
-    void invoke<string | null>('main_window_take_pending_navigation')
-      .then((target) => {
-        if (!target) return;
-        const page = String(target);
-        if (requestCodexRequestLogsNavigation(page)) {
-          setPage('codex-api-service');
-        } else if (isMainWindowNavigablePage(page)) {
-          setPage(page);
-        }
-      })
-      .catch(() => {
-        /* command may be unavailable on older builds */
-      });
-  }, []);
-
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-
-        listen<string>('tray:navigate', (event) => {
-          const target = String(event.payload || '');
-          if (requestCodexRequestLogsNavigation(target)) {
-            setPage('codex-api-service');
-          } else if (isMainWindowNavigablePage(target)) {
-            setPage(target);
-          }
-        }).then((fn) => { unlisten = fn; });
-
-    return () => {
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, []);
-
   useEffect(() => subscribeTauriEvent('cursor:index-recovered', () => {
     void useCursorAccountStore.getState().fetchAccounts();
   }), []);
   useEffect(() => subscribeTauriEvent<AccountSyncEventPayload>(ACCOUNTS_CHANGED_EVENT, ({ payload }) => {
     if (payload?.platformId === 'antigravity' && payload.reason === 'wakeup-quota-refresh') {
-      void useAccountStore.getState().fetchAccounts();
+      void useAccountStore.getState().fetchAccounts({ background: true });
     }
   }), []);
 
@@ -3578,7 +3545,9 @@ function MainApp() {
             <div className="modal-body qs-body">
               <div className="qs-section">
                 <p className="app-path-missing-desc">
-                  {appPathMissing.retry?.kind === 'configure' ? t('appPath.missing.configureHint')
+                  {appPathMissing.invalidWorkbuddyPath
+                    ? t('workbuddy.errors.nodeAppPath', { path: appPathMissing.invalidWorkbuddyPath })
+                    : appPathMissing.retry?.kind === 'configure' ? t('appPath.missing.configureHint')
                     : isCliPathApp(appPathMissing.app) ? t('appPath.missing.cliHint', { app: appPathMissingAppName })
                     : t('appPath.missing.desc', { app: appPathMissingAppName })}
                 </p>
@@ -3806,6 +3775,9 @@ function MainApp() {
           <VisibleBootPage when={page === 'overview'}>
             <AccountsPage onNavigate={setPage} />
           </VisibleBootPage>
+          <VisibleBootPage when={page === 'antigravity-usage'}>
+            <AntigravityTokenUsagePage onNavigate={setPage} />
+          </VisibleBootPage>
           {/* Codex suite: keep both pages mounted after first visit to avoid empty flash when switching. */}
           {shouldMountCodexSuite && (
             <Suspense fallback={page === 'codex' ? suspenseFallback : null}>
@@ -3863,6 +3835,9 @@ function MainApp() {
           </VisibleBootPage>
           <VisibleBootPage when={page === 'zcode'}>
             <ZcodeAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 't3code'}>
+            <T3codeAccountsPage onNavigate={setPage} />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'trae'}>
             <TraeAccountsPage platformId="trae" />

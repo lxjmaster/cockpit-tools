@@ -173,16 +173,19 @@ pub(crate) fn upstream_error_metadata(value: &Value) -> (Option<String>, bool) {
 
 /// WebSocket errors can wrap the HTTP error envelope under `body`.
 pub(crate) fn error_object(value: &Value) -> &Value {
+    let has_detail = |error: &&Value| super::super::upstream_errors::error_value(error);
     value
         .pointer("/response/error")
-        .filter(|error| !error.is_null())
-        .or_else(|| value.get("error").filter(|error| !error.is_null()))
+        .filter(has_detail)
+        .or_else(|| value.get("error").filter(has_detail))
         .or_else(|| {
-            value
-                .pointer("/body/error")
-                .filter(|error| !error.is_null())
+            // A named non-error event can carry provider metadata under body.
+            // Only infer an error there when the wire event permits it.
+            super::super::upstream_errors::can_infer_wrapped_error(value, None)
+                .then(|| value.pointer("/body/error").filter(has_detail))
+                .flatten()
         })
-        .or_else(|| value.get("detail").filter(|error| !error.is_null()))
+        .or_else(|| value.get("detail").filter(has_detail))
         .unwrap_or(value)
 }
 
@@ -245,6 +248,7 @@ pub(crate) fn failure_phase(code: &str) -> &'static str {
         "upstream_idle_timeout" => "stream_idle",
         "image_output_missing" => "upstream_response",
         "upstream_total_timeout" => "total_timeout",
+        "network_recovery_exhausted" => "network_recovery",
         "client_cancelled" | "client_disconnected" | "client_interrupted" => "client_cancelled",
         "identity_store_unavailable" | "identity_store_full" | "unknown_upstream_state" => {
             "identity"

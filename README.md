@@ -16,6 +16,8 @@
 
 **WorkBuddy AI 国际版**（macOS、Windows）：支持浏览器授权、本机或 JSON 导入、积分余额和桌面客户端切号。
 
+**T3 Code**：在统一列表中管理已接入的提供方账号，添加、移除或设置默认账号，并查看真实订阅与剩余额度。启动 T3 Code 后，可在聊天输入框查看当前账号的额度。
+
 **语言**：支持 18 种语言
 
 🇺🇸 English · 🇨🇳 简体中文 · 繁體中文 · 🇯🇵 日本語 · 🇩🇪 Deutsch · 🇪🇸 Español · 🇫🇷 Français · 🇮🇹 Italiano · 🇰🇷 한국어 · 🇧🇷 Português · 🇷🇺 Русский · 🇹🇷 Türkçe · 🇵🇱 Polski · 🇨🇿 Čeština · 🇸🇦 العربية · 🇻🇳 Tiếng Việt · 🇮🇩 Bahasa Indonesia
@@ -180,6 +182,7 @@ Codex 同样支持多账号多实例并行运行。比如同时打开两个 Code
 ### 8. Grok CLI 账号管理
 
 - **OAuth 授权**：支持 xAI 官方 OIDC device flow，在浏览器完成验证后自动保存账号
+- **接入 Codex API 服务**：在 **Grok CLI** 页面完成 OAuth 授权，再打开 **Codex → API 服务 → 添加账号**，按 **Grok** 筛选、勾选账号并保存。Cockpit 会创建与该 Grok 账号绑定的供应商条目，并为服务准备 xAI 凭据。
 - **API Key 与第三方接口**：支持官方 xAI API Key，也支持配置 OpenAI 兼容的第三方 `Base URL` 与模型 ID；配置写入账号专属 `config.toml`，密钥只在启动对应 CLI 进程时通过环境变量注入
 - **导入与脱敏导出**：可从默认 `~/.grok/auth.json` 或指定 JSON 导入官方凭据；账号页导出及通用账号备份均不含 access token/refresh token，不能用于恢复登录，迁移时需单独导入官方 `auth.json`
 - **真实切号**：将选中账号按 Grok CLI 官方 registry 格式写回默认 `~/.grok/auth.json`，并保留文件中其他 registry scope
@@ -386,10 +389,13 @@ Grok CLI 默认实例通常直接沿用官方 `~/.grok` 目录，启动时不设
 前往 [GitHub Releases](https://github.com/jlcodes99/cockpit-tools/releases) 下载对应系统的安装包：
 
 *   **macOS**: `.dmg` (Apple Silicon & Intel)
-*   **Windows**: `.msi`（推荐）、`.exe`，或 `x64-portable.zip`（解压即用，无需安装）
+*   **Windows x64**：`_x64_en-US.msi`（推荐）、`_x64-setup.exe`，或 `x64-portable.zip`（解压即用）
+*   **Windows ARM64**：`_arm64-setup.exe`
 
 Windows 便携包解压后直接运行其中的 `Cockpit Tools.exe`（或同名主程序）。系统需要 Windows 10/11 的 Microsoft Edge WebView2 Runtime；账号和配置仍按当前 Windows 用户目录保存，不会随 ZIP 文件夹自动迁移。
-*   **Linux**: `.deb` (Debian/Ubuntu)、`.rpm` 或 `.AppImage` (通用)
+*   **Linux**: `.deb` (Debian/Ubuntu)、`.rpm` 或 `.AppImage`
+
+Ubuntu 20.04 无法安装当前 `.deb`，其软件源缺少 `libwebkit2gtk-4.1-0`。当前 x64 AppImage 的主程序需要 glibc 2.34，Ubuntu 20.04 提供 glibc 2.31。可使用 Ubuntu 24.04 LTS，源码构建见 [Ubuntu 24.04 编译指南](docs/build-wsl2-ubuntu24.md)。
 
 ### 选项 B: Homebrew 安装 (macOS)
 
@@ -456,6 +462,39 @@ npm run tauri dev
 npm run tauri build
 ```
 
+### 命令行
+
+从带有 CLI 附件的 [GitHub Release](https://github.com/jlcodes99/cockpit-tools/releases) 下载 `cockpit-cli_<版本>_linux_<架构>.tar.gz`。按机器选择 `x86_64` 或 `aarch64`，解压后运行 `./cockpit-cli list codex --json`。发布构建使用 Ubuntu 22.04（x86_64）和 Ubuntu 24.04（aarch64），运行需要系统提供 OpenSSL 3 运行库，无需桌面环境。
+
+也可以从源码运行。脚本可用 `--json` 读取标准输出，失败时检查非零退出码和标准错误。
+
+```bash
+cargo run --locked --package cockpit-cli -- list codex --json
+cargo run --locked --package cockpit-cli -- switch codex "你的账号ID" --json
+cargo run --locked --package cockpit-cli -- switch cursor "你的账号ID" --json
+```
+
+#### 全平台账号自动化
+
+启动与 CLI 协议版本匹配的 Cockpit Tools 桌面端后，在同一台机器、同一用户下运行以下命令。使用开发版或自定义数据目录时，CLI 也要使用对应的配置。桌面端的 Codex API 服务可以保持关闭。
+
+```bash
+cockpit-cli account platforms --json
+cockpit-cli account list codex --json
+cockpit-cli account quota codex "账号ID" --json
+cockpit-cli account quota codex "账号ID" --refresh --json
+cockpit-cli account switch cursor "账号ID" --json
+cockpit-cli api-service members --json
+cockpit-cli api-service add "Codex账号ID" --json
+cockpit-cli api-service remove "服务成员账号ID" --json
+```
+
+- `account platforms` 列出全部平台 ID。`account list` 返回账号 ID、显示信息、原始套餐和标签。额度与切号使用所选平台的精确账号 ID。
+- `account quota` 读取已保存的额度。支持实时刷新的账号可加 `--refresh`。结果的 `quota.status` 为 `available`、`stale`、`failed` 或 `unavailable`，`quota.data` 随平台变化。上游未提供额度时保留未知状态。
+- `account switch` 复用各平台的默认客户端切号流程，部分平台会启动或重启客户端。Codex 和 Antigravity 桌面版的外部切号只应用凭据。Grok 使用独立目录时返回 `account_profile_prepared`。客户端凭据已写入但后续操作出现问题时，可检查返回的 `warnings` 或错误码。
+- `api-service members` 列出全局 API 服务成员，包含成员账号 ID、来源账号 ID、接入方式和暂停状态。`add` 通过现有本地接入规则加入已保存的 Codex 账号，返回新增 ID 和跳过原因。`remove` 使用成员列表中的 `accountId`，返回实际移出的成员 ID，保留原账号。
+- 新命令在标准输出返回 JSON，`--json` 时使用单行格式。失败通过非零退出码和标准错误返回。旧的顶层 `list` 和 `switch` 仍可用于其原有平台的无桌面操作。
+
 ---
 
 ## Star History
@@ -466,9 +505,7 @@ npm run tauri build
 
 ## 💬 交流群
 
-可以通过微信联系，或加入新建的 Telegram 畅聊群。
-
-新建 Telegram 畅聊群：[点击加入](https://t.me/+Y8gMv4SlZUU2MWY1)
+可以通过微信联系。
 
 | 微信（个人） |
 | :---: |

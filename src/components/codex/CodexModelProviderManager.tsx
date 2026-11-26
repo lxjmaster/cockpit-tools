@@ -95,6 +95,7 @@ import {
 } from "../../services/codexApiKeyUsageRefreshService";
 import { useCodexRelayBalanceDisabled } from "../../hooks/useCodexRelayBalanceDisabled";
 import { canShowCodexProviderBalance } from "../../utils/codexDeepSeekAccess";
+import { customProviderUsageBinding, parseCustomProviderUsage, type CustomProviderUsage } from "../../utils/codexCustomProviderUsage";
 import { formatModelProviderUsageMoney, isRelayBalanceDisabledError } from "../../services/modelProviderUsageService";
 import { prefetchCodexLaunchModels } from "../../services/codexLaunchModelDiscovery";
 import { useSponsorStore } from "../../stores/useSponsorStore";
@@ -104,6 +105,7 @@ import {
   CODEX_API_PROVIDER_CUSTOM_ID,
   findCodexApiProviderPresetById,
   resolveCodexApiProviderPresetId,
+  resolveOllamaLocalPlaceholderKey,
 } from "../../utils/codexProviderPresets";
 import {
   normalizeApiKeyFunOfficialUrl,
@@ -374,6 +376,7 @@ interface ProviderFormState {
   supportsWebsockets: boolean;
   enableModePreference: CodexProviderEnableModePreference;
   integrationType: "sub2api" | "new_api" | "";
+  customUsageText: string;
   newApiKeyName: string;
   newApiKey: string;
   newUsageApiKey: string;
@@ -404,6 +407,7 @@ const EMPTY_FORM: ProviderFormState = {
   supportsWebsockets: false,
   enableModePreference: "direct",
   integrationType: "",
+  customUsageText: "",
   newApiKeyName: "",
   newApiKey: "",
   newUsageApiKey: "",
@@ -1682,6 +1686,7 @@ export function useCodexModelProviderManagerController({
           resolveCodexApiProviderPresetId(provider.baseUrl),
         ),
       integrationType: provider.integrationType ?? "",
+      customUsageText: provider.customUsage ? JSON.stringify(provider.customUsage, null, 2) : "",
       newApiKeyName: account && !selectedKey ? account.account_name ?? "" : "",
       newApiKey: account && !selectedKey && modelKeyId === undefined ? account.openai_api_key ?? "" : "",
       newUsageApiKey: "",
@@ -2199,8 +2204,16 @@ export function useCodexModelProviderManagerController({
     const name = form.name.trim();
     const baseUrl = form.baseUrl.trim();
     const normalizedBaseUrl = normalizeCodexModelProviderBaseUrl(baseUrl);
-    const newApiKey = form.newApiKey.trim();
     const modelCatalog = parseModelCatalogText(form.modelCatalogText);
+    let customUsage: CustomProviderUsage | undefined;
+    try {
+      if (!accountEditor && !isOpenAIOfficialUsageUrl(baseUrl)) {
+        customUsage = parseCustomProviderUsage(form.customUsageText, baseUrl);
+      }
+    } catch {
+      setFormError(t("codex.customProviderUsage.invalid", "请检查额度查询 JSON、接口地址是否与供应商同源，以及字段映射。"));
+      return;
+    }
     const parsedWindows = parseContextWindowDrafts(
       form.modelContextWindowsDraft,
       modelCatalog,
@@ -2225,6 +2238,9 @@ export function useCodexModelProviderManagerController({
       ? providers.find(provider => normalizeCodexModelProviderBaseUrl(provider.baseUrl) === normalizedBaseUrl) : undefined);
     const isCreate = !providerToUpdate;
     const existingKeyCount = providerToUpdate?.apiKeys.length ?? 0;
+    const selectedAccountKey = providerToUpdate?.apiKeys.find(key => key.id === accountEditor?.apiKeyId);
+    const needsNewKey = isCreate || existingKeyCount === 0 || editorModelKeyId === "__new__" || (accountEditor && !selectedAccountKey);
+    const newApiKey = form.newApiKey.trim() || (needsNewKey ? resolveOllamaLocalPlaceholderKey(baseUrl) : "");
 
     if (!name) {
       setFormError(
@@ -2264,7 +2280,6 @@ export function useCodexModelProviderManagerController({
       return;
     }
 
-    const selectedAccountKey = providerToUpdate?.apiKeys.find(key => key.id === accountEditor?.apiKeyId);
     if (accountEditor && !selectedAccountKey && !newApiKey) {
       setFormError(t("codex.quickSwitch.validation.apiKeyRequired"));
       return;
@@ -2300,6 +2315,7 @@ export function useCodexModelProviderManagerController({
           supportsWebsockets: form.supportsWebsockets,
           enableModePreference: form.enableModePreference,
           integrationType: form.integrationType || undefined,
+          customUsage,
           initialApiKey: newApiKey || undefined,
           initialApiKeyName: form.newApiKeyName,
           initialUsageApiKey: form.newUsageApiKey,
@@ -2317,6 +2333,7 @@ export function useCodexModelProviderManagerController({
           supportsWebsockets: form.supportsWebsockets,
           enableModePreference: form.enableModePreference,
           integrationType: form.integrationType || null,
+          ...(accountEditor ? {} : { customUsage: customUsage ?? null }),
         });
         if (newApiKey) {
           savedProvider = await addApiKeyToCodexModelProvider(
@@ -3120,13 +3137,15 @@ export function useCodexModelProviderManagerController({
         const bindAccountId = resolveCodexProviderBindAccountId(account, fallbackBindId);
         let deferred = false;
         if (launchAfterSwitch) {
-          await updateCodexInstance({
+          const updated = await updateCodexInstance({
             instanceId: preview.instanceId,
             bindAccountId,
             followLocalAccount: false,
             deferBindAccountApplication: true,
           });
-          await startCodexInstance(preview.instanceId);
+          await startCodexInstance(preview.instanceId, updated.launchMode === "cli"
+            ? { expectedSwitchBinding: bindAccountId }
+            : undefined);
         } else {
           deferred = await switchInstanceAccount(preview.instanceId, bindAccountId);
         }
@@ -3175,8 +3194,9 @@ export function useCodexModelProviderManagerController({
     async (provider: CodexModelProvider, apiKey?: CodexModelProviderApiKey | null) => {
       if (!apiKey || !canShowCodexProviderBalance(relayBalanceDisabled, provider.baseUrl, providerUsageMap[provider.id]?.summary?.mode)) return;
       const usageConfig = resolveOpenAIUsageConfig(provider, apiKey.apiKey);
+      const sourceBinding = usageConfig?.binding ?? customProviderUsageBinding(provider);
       if (isOpenAIOfficialUsageUrl(provider.baseUrl) && !usageConfig) return;
-      const queryId = usageConfig ? `${provider.id}:${usageConfig.binding}` : provider.id;
+      const queryId = sourceBinding ? `${provider.id}:${sourceBinding}` : provider.id;
       if (providerUsageInFlight.current.has(queryId)) return;
       providerUsageInFlight.current.add(queryId);
       setProviderUsageMap((previous) => ({
@@ -3184,8 +3204,8 @@ export function useCodexModelProviderManagerController({
         [provider.id]: {
           ...previous[provider.id],
           loading: true,
-          sourceBinding: usageConfig?.binding,
-          summary: previous[provider.id]?.sourceBinding === usageConfig?.binding ? previous[provider.id]?.summary : undefined,
+          sourceBinding,
+          summary: previous[provider.id]?.sourceBinding === sourceBinding ? previous[provider.id]?.summary : undefined,
           error: undefined,
           unavailable: false,
         },
@@ -3196,6 +3216,7 @@ export function useCodexModelProviderManagerController({
           apiKey: apiKey.apiKey,
           usageApiKey: usageConfig?.apiKey,
           integrationType: provider.integrationType ?? null,
+          customUsage: provider.customUsage,
         });
         if (
           (summary.mode === "sub2api" || summary.mode === "new_api") &&
@@ -3204,9 +3225,9 @@ export function useCodexModelProviderManagerController({
           await saveCodexModelProviderDetectedIntegrationType(provider.id, summary.mode);
           await reloadProviders();
         }
-        setProviderUsageMap((previous) => previous[provider.id]?.sourceBinding !== usageConfig?.binding ? previous : ({
+        setProviderUsageMap((previous) => previous[provider.id]?.sourceBinding !== sourceBinding ? previous : ({
           ...previous,
-          [provider.id]: { loading: false, sourceBinding: usageConfig?.binding, summary, updatedAt: Date.now() },
+          [provider.id]: { loading: false, sourceBinding, summary, updatedAt: Date.now() },
         }));
       } catch (err) {
         const errorMessage = parseServiceError(err);
@@ -3214,12 +3235,12 @@ export function useCodexModelProviderManagerController({
           errorMessage.includes("PROVIDER_USAGE_DETECT_FAILED") ||
           errorMessage.includes("PROVIDER_USAGE_HTTP_404") ||
           errorMessage.includes("PROVIDER_USAGE_TYPE_UNSUPPORTED");
-        setProviderUsageMap((previous) => previous[provider.id]?.sourceBinding !== usageConfig?.binding ? previous : ({
+        setProviderUsageMap((previous) => previous[provider.id]?.sourceBinding !== sourceBinding ? previous : ({
           ...previous,
           [provider.id]: isRelayBalanceDisabledError(err) ? { ...previous[provider.id], loading: false } : {
             loading: false,
-            sourceBinding: usageConfig?.binding,
-            summary: previous[provider.id]?.sourceBinding === usageConfig?.binding ? previous[provider.id]?.summary : undefined,
+            sourceBinding,
+            summary: previous[provider.id]?.summary,
             error: unavailable ? undefined : errorMessage,
             unavailable,
             updatedAt: Date.now(),
@@ -3567,7 +3588,6 @@ export function useCodexModelProviderManagerController({
     formatProviderBatchTestErrorMessage,
     formatUsageDetailLabel,
     formatUsageDetailValue,
-    formatUsageMoney,
     formatUsageQuotaValue,
     formError,
     getInstanceName,

@@ -821,6 +821,14 @@ fn validate_api_key_account_scope_update(
     account_ids: Option<&[String]>,
     inherit_account_pool: Option<bool>,
 ) -> Result<(), String> {
+    if api_key.account_pool_id.is_some() {
+        if inherit_account_pool == Some(true)
+            || account_ids.is_some_and(|ids| ids != api_key.account_ids)
+        {
+            return Err("请在关联的账号池中更改成员，或先解除关联".into());
+        }
+        return Ok(());
+    }
     if !api_key_has_fixed_account_scope(collection, api_key) {
         return Ok(());
     }
@@ -2492,7 +2500,7 @@ fn prepare_sidecar_launch_config_in_dir_sync(
         } else if collection_uses_provider_gateway_account(collection, &account.id) {
             is_override_account || is_provider_gateway_eligible_account(&account)
         } else {
-            is_local_access_eligible_account(&account, collection.restrict_free_accounts)
+            is_local_access_eligible_account(&account)
         };
         if !eligible {
             continue;
@@ -2517,6 +2525,12 @@ fn prepare_sidecar_launch_config_in_dir_sync(
             expected_auth_files.insert(file_name.clone());
             manifest_accounts.push(grok_sidecar_account_manifest_value(&account, &file_name));
             continue;
+        }
+        if codex_account::is_zcode_upstream_provider(&account) {
+            return Err("ZCode Provider Gateway 仅支持 Native Rust 网关，不能写入 sidecar 配置".to_string());
+        }
+        if codex_account::is_workbuddy_upstream_provider(&account) {
+            return Err("WorkBuddy ACP Provider Gateway 仅支持 Native Rust 网关，不能写入 sidecar 配置".to_string());
         }
 
         routing_accounts.insert(account.id.clone(), account.clone());
@@ -2555,7 +2569,7 @@ fn prepare_sidecar_launch_config_in_dir_sync(
                     .collect(),
             );
             let provider_route_models = if api_service
-                && automatic_api_service_provider_route_eligible(&account, &upstream_models)
+                && automatic_api_service_provider_route_eligible(&account, || &upstream_models)
             {
                 candidate_route_models
             } else {

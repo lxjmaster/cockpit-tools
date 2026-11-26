@@ -6,13 +6,17 @@ import type { ReactElement } from "react";
 import type { TFunction } from "i18next";
 import { Database } from "lucide-react";
 import { isCodexChatCompletionsApiKeyAccount, type CodexAccount } from "../types/codex";
+import { getClaudeQuotaClass } from "../types/claude";
 import { isCodexApiKeyUsageQueryEligible, isDeepSeekAccount } from "../utils/codexDeepSeekAccess";
+import { ModelProviderUsagePanel } from "../components/model-provider/ModelProviderUsagePanel";
+import { CodexQuotaMiniRows } from "../components/codex/CodexQuotaMiniRows";
 import {
   formatCockpitApiInteger,
   formatCockpitApiTokenCount,
   resolveApiKeyUsageMode,
 } from "./codexAccountsControllerModel";
 import {
+  presentNewApiQuota,
   resolveNewApiQuotaSnapshot,
 } from "../services/modelProviderUsageService";
 import type {
@@ -29,7 +33,7 @@ export interface CodexApiKeyUsagePanelOptions {
   usageState: CodexApiKeyUsageState | undefined;
   onRefresh?: () => void;
   t: TFunction;
-  formatApiKeyUsagePercent: (summary?: CodexModelProviderUsageSummary) => number;
+  formatApiKeyUsagePercent: (summary?: CodexModelProviderUsageSummary) => number | null;
   formatApiKeyUsageMoney: (value?: number | null, unit?: string | null) => string;
   formatApiKeyUsageQuotaValue: (
     summary: CodexModelProviderUsageSummary | undefined,
@@ -81,7 +85,7 @@ export function renderCodexApiKeyUsagePanel({
   }
   if (
     isCodexChatCompletionsApiKeyAccount(account) &&
-    !isCodexApiKeyUsageQueryEligible(account, provider?.integrationType, usageState?.summary)
+    !isCodexApiKeyUsageQueryEligible(account, provider?.customUsage ? "custom" : provider?.integrationType, usageState?.summary)
   ) {
     return <></>;
   }
@@ -92,12 +96,16 @@ export function renderCodexApiKeyUsagePanel({
     provider?.baseUrl.trim() || (account.api_base_url || "").trim();
   const canRefresh = Boolean(apiKey && baseUrl);
   const usageMode = resolveApiKeyUsageMode(summary);
+  if (usageMode === "custom") {
+    return <ModelProviderUsagePanel summary={summary} variant={variant} />;
+  }
   const isDeepSeekUsage =
     isDeepSeekAccount(account) || usageMode === "deepseek";
   const isNewApiUsage = usageMode === "new_api";
   const isSub2ApiUsage = usageMode === "sub2api";
   const isTokenPlanUsage = usageMode === "token_plan";
   const usedPercent = formatApiKeyUsagePercent(summary);
+  const newApiQuota = resolveNewApiQuotaSnapshot(summary);
   if (isDeepSeekUsage) {
     return (
       <div className={`codex-api-key-usage-panel ${variant} sub2api`}>
@@ -145,11 +153,10 @@ export function renderCodexApiKeyUsagePanel({
     );
   }
   if (variant === "card" && summary && isNewApiUsage) {
-    const quota = resolveNewApiQuotaSnapshot(summary);
-    const grantedText = formatApiKeyUsageMoney(quota.granted, summary.unit);
-    const availableText = formatApiKeyUsageMoney(
-      quota.available,
-      summary.unit,
+    const quota = presentNewApiQuota(
+      summary,
+      t("codex.newApi.quota.unlimited", "不限量"),
+      t("dashboard.noData", "暂无数据"),
     );
     const expiresText =
       quota.expiresAt != null
@@ -158,35 +165,23 @@ export function renderCodexApiKeyUsagePanel({
             value: String(quota.expiresAt),
           })
         : "-";
-    const unlimitedText = t("codex.newApi.quota.unlimited", "不限量");
-    const quotaValueText =
-      summary.quotaUnlimited === true
-        ? unlimitedText
-        : `${availableText} / ${grantedText}`;
-    // Match the available / granted label and the other remaining-quota cards.
-    const quotaBarWidth = summary.quotaUnlimited === true
-      ? 100
-      : quota.granted != null && quota.granted > 0 && quota.available != null
-        ? Math.max(0, Math.min(100, Math.round((quota.available / quota.granted) * 100)))
-        : 0;
     return (
       <div
         className="quota-item codex-api-key-quota-item new-api"
-        title={`${t("codex.cockpitApi.balance", "额度")}：${quotaValueText}`}
+        title={`${t("codex.cockpitApi.balance", "额度")}：${quota.text}`}
       >
         <div className="quota-header">
           <Database size={14} />
           <span className="quota-label">
             {t("codex.cockpitApi.balance", "额度")}
           </span>
-          <span className="quota-pct high">{quotaValueText}</span>
+          <span className="quota-pct high">{quota.text}</span>
         </div>
-        <div className="quota-bar-track">
-          <div
-            className="quota-bar high"
-            style={{ width: `${quotaBarWidth}%` }}
-          />
-        </div>
+        {quota.percent != null && (
+          <div className="quota-bar-track">
+            <div className="quota-bar high" style={{ width: `${quota.percent}%` }} />
+          </div>
+        )}
         {expiresText !== "-" && (
           <span className="quota-reset">
             {t("codex.modelProviders.usage.fields.expiresAt", "过期时间")}：
@@ -197,39 +192,87 @@ export function renderCodexApiKeyUsagePanel({
     );
   }
   if (variant === "card" && summary && isTokenPlanUsage) {
+    const windows = summary.quotaUnlimited ? [] : [
+      { key: "interval", label: t("codex.localAccess.quotaPool.hourlyShort") },
+      { key: "weekly", label: t("codex.localAccess.quotaPool.weeklyShort") },
+      { key: "monthly", label: t("codex.localAccess.statsRange.monthly") },
+    ].flatMap(({ key, label }) => {
+      const value = findApiKeyUsageDetail(summary, `${key}RemainingPercent`)?.value.trim();
+      const remaining = value ? Number(value) : NaN;
+      if (!Number.isFinite(remaining)) return [];
+      const percentage = Math.max(0, Math.min(100, Math.round(remaining)));
+      const reset = findApiKeyUsageDetail(summary, `${key}ExpiresAt`);
+      const resetText = reset ? formatApiKeyUsageDetailValue(reset, summary.unit) : undefined;
+      return [{
+        key,
+        label,
+        percentage,
+        quotaClass: getClaudeQuotaClass(100 - percentage),
+        valueText: formatApiKeyUsageMoney(percentage, "%"),
+        resetText: resetText !== "-" ? resetText : undefined,
+      }];
+    });
+    if (windows.length > 1) {
+      return (
+        <div className="codex-api-key-quota-item token-plan" title={summary.planName ?? undefined}>
+          <CodexQuotaMiniRows items={windows} t={t} />
+        </div>
+      );
+    }
+    const remainingQuota = summary.quotaRemaining ?? summary.remaining;
+    const quotaLimit = summary.quotaLimit;
+    let remainingPercent: number | null = null;
+    if (!summary.quotaUnlimited && remainingQuota != null && Number.isFinite(remainingQuota)) {
+      const percent = summary.unit?.trim() === "%"
+        ? remainingQuota
+        : quotaLimit != null && Number.isFinite(quotaLimit) && quotaLimit > 0
+          ? (remainingQuota / quotaLimit) * 100
+          : null;
+      if (percent != null) {
+        remainingPercent = Math.max(0, Math.min(100, Math.round(percent)));
+      }
+    }
+    const quotaBarClass = remainingPercent == null ? "" : getClaudeQuotaClass(100 - remainingPercent);
     const resetDetail =
       findApiKeyUsageDetail(summary, "intervalExpiresAt") ??
       findApiKeyUsageDetail(summary, "weeklyExpiresAt") ??
       findApiKeyUsageDetail(summary, "expiresAt");
+    // 智谱等 coding plan 是「5 小时 + 每周」双窗：主数字是 5 小时窗剩余，
+    // 把每周窗剩余并排在旁边，避免用户只看到一个数字而误以为没有周限。
+    const weeklyRemainingDetail = findApiKeyUsageDetail(summary, "weeklyRemainingPercent");
+    const weeklyRemaining = Number.parseFloat(weeklyRemainingDetail?.value ?? "");
     return (
       <div
         className="quota-item codex-api-key-quota-item token-plan"
         title={`${t(
           "codex.modelProviders.usage.fields.remaining",
           "Remaining",
-        )}: ${formatApiKeyUsageQuotaValue(
-          summary,
-          summary.quotaRemaining ?? summary.remaining,
-        )}`}
+        )}: ${formatApiKeyUsageQuotaValue(summary, remainingQuota)}`}
       >
         <div className="quota-header">
           <Database size={14} />
           <span className="quota-label">
             {t("codex.modelProviders.usage.fields.planName", "Token Plan")}
           </span>
-          <span className="quota-pct high">
-            {formatApiKeyUsageQuotaValue(
-              summary,
-              summary.quotaRemaining ?? summary.remaining,
+          <span className={`quota-pct ${quotaBarClass}`}>
+            {formatApiKeyUsageQuotaValue(summary, remainingQuota)}
+            {Number.isFinite(weeklyRemaining) && (
+              <span>
+                {" · "}
+                {t("codex.modelProviders.usage.fields.weeklyShort", "Weekly")}{" "}
+                {formatApiKeyUsageMoney(weeklyRemaining, "%")}
+              </span>
             )}
           </span>
         </div>
-        <div className="quota-bar-track">
-          <div
-            className="quota-bar high"
-            style={{ width: `${Math.max(0, Math.min(100, usedPercent))}%` }}
-          />
-        </div>
+        {remainingPercent != null && (
+          <div className="quota-bar-track">
+            <div
+              className={`quota-bar ${quotaBarClass}`}
+              style={{ width: `${remainingPercent}%` }}
+            />
+          </div>
+        )}
         {(summary.planName || resetDetail) && (
           <span className="quota-reset">
             {summary.planName || "Token Plan"}
@@ -321,18 +364,7 @@ export function renderCodexApiKeyUsagePanel({
                     )}
                   </span>
                   <strong>
-                    {(() => {
-                      const raw = Number(
-                        findApiKeyUsageDetail(summary, "totalGranted")
-                          ?.value ?? NaN,
-                      );
-                      return Number.isFinite(raw)
-                        ? formatApiKeyUsageMoney(raw, summary.unit)
-                        : formatApiKeyUsageDetailByKey(
-                            summary,
-                            "totalGranted",
-                          );
-                    })()}
+                    {formatApiKeyUsageMoney(newApiQuota.granted, summary.unit)}
                   </strong>
                 </div>
                 <div>
@@ -343,18 +375,7 @@ export function renderCodexApiKeyUsagePanel({
                     )}
                   </span>
                   <strong>
-                    {(() => {
-                      const raw = Number(
-                        findApiKeyUsageDetail(summary, "totalAvailable")
-                          ?.value ?? NaN,
-                      );
-                      return Number.isFinite(raw)
-                        ? formatApiKeyUsageMoney(raw, summary.unit)
-                        : formatApiKeyUsageDetailByKey(
-                            summary,
-                            "totalAvailable",
-                          );
-                    })()}
+                    {formatApiKeyUsageMoney(newApiQuota.available, summary.unit)}
                   </strong>
                 </div>
                 <div>
@@ -458,7 +479,7 @@ export function renderCodexApiKeyUsagePanel({
               </>
             ) : null}
           </div>
-          {isNewApiUsage || isTokenPlanUsage ? (
+          {isNewApiUsage ? (
             <div className="codex-api-key-usage-progress">
               <div className="cockpit-api-progress-track">
                 <div

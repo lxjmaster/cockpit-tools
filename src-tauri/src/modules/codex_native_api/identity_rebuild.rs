@@ -3,7 +3,7 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 
 #[path = "identity_checkpoint.rs"]
-pub(super) mod checkpoint_store;
+pub(crate) mod checkpoint_store;
 
 // Checkpoints keep reusable settings, but a prior turn's forced tool choice
 // must not force another call when the current request leaves the choice open.
@@ -718,10 +718,20 @@ impl IdentityStore {
         headers: &HeaderMap,
         body: &mut Value,
     ) -> Result<bool, ServiceError> {
-        let Some(Value::String(text)) = body.get("input") else {
-            return Ok(false);
+        let input = match body.get("input") {
+            Some(Value::String(text)) => serde_json::json!([
+                {"type":"message","role":"user","content":[{"type":"input_text","text":text}]}
+            ]),
+            None | Some(Value::Null)
+                if body.get("previous_response_id").and_then(Value::as_str)
+                    .is_some_and(|previous| !previous.trim().is_empty()) =>
+            {
+                // The checkpoint provides all input for a continuation with no delta.
+                Value::Array(Vec::new())
+            }
+            _ => return Ok(false),
         };
-        body["input"] = serde_json::json!([{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}]);
+        body["input"] = input;
         let mut probe_headers = headers.clone();
         let mut probe = body.clone();
         supplement_identities(context, &mut probe_headers, &mut probe)?;
@@ -1234,27 +1244,7 @@ impl IdentityStore {
         }
         if let Some(checkpoint) = checkpoint {
             checkpoint.publish(&transaction, binding, generation, thread, id)?;
-        }
-        // Only the hot cache is evicted. Accepted history, identity and ciphertext
-        // ownership remain durable, including for large and old response IDs.
-        loop {
-            let (count, bytes): (i64, i64) = transaction
-                .query_row(
-                    "SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM native_rebuild_checkpoints_v1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(storage)?;
-            if count <= MAX_CHECKPOINTS && bytes <= MAX_CACHE_BYTES {
-                break;
-            }
-            // A pre-upgrade hot row may be its response's only history copy.
-            // Pin those bounded legacy rows rather than scanning/migrating all
-            // history at startup or silently erasing their continuation proof.
-            let removed = transaction.execute("DELETE FROM native_rebuild_checkpoints_v1 WHERE rowid=(SELECT c.rowid FROM native_rebuild_checkpoints_v1 c WHERE EXISTS(SELECT 1 FROM native_rebuild_history_v1 h WHERE h.caller=c.caller AND h.response=c.response) ORDER BY c.created,c.rowid LIMIT 1)",[]).map_err(storage)?;
-            if removed == 0 {
-                break;
-            }
+            evict_hot_cache(&transaction)?;
         }
         // Publish at most one complete generation, or let cancellation win and
         // roll the entire transaction back, including newly accepted input.
@@ -1272,6 +1262,41 @@ impl IdentityStore {
         }
         transaction.commit().map_err(storage)
     }
+}
+
+/// Drop the oldest checkpoint prefix until both hot-cache budgets fit.
+fn evict_hot_cache(transaction: &Transaction<'_>) -> Result<(), ServiceError> {
+    let (count, bytes): (i64, i64) = transaction
+        .query_row(
+            "SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM native_rebuild_checkpoints_v1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(storage)?;
+    if count <= MAX_CHECKPOINTS && bytes <= MAX_CACHE_BYTES {
+        return Ok(());
+    }
+    transaction
+        .execute(
+            "DELETE FROM native_rebuild_checkpoints_v1 WHERE rowid IN (
+               SELECT rowid FROM (
+                 SELECT rowid,
+                        COALESCE(SUM(bytes) OVER (
+                          ORDER BY created, rowid
+                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                        ), 0) AS prev_bytes,
+                        COUNT(*) OVER (
+                          ORDER BY created, rowid
+                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                        ) AS prev_count
+                 FROM native_rebuild_checkpoints_v1
+               )
+               WHERE ?1 - prev_count > ?3 OR ?2 - prev_bytes > ?4
+             )",
+            params![count, bytes, MAX_CHECKPOINTS, MAX_CACHE_BYTES],
+        )
+        .map_err(storage)?;
+    Ok(())
 }
 
 impl RequestIdentity {
@@ -1327,3 +1352,7 @@ impl Binding {
 #[cfg(test)]
 #[path = "identity_rebuild_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "identity_rebuild_eviction_tests.rs"]
+mod eviction_tests;

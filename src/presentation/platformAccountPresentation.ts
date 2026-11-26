@@ -1,5 +1,6 @@
 import { getCodexServiceAccountDisplay, getCodexServiceSourceId } from "../utils/chatgptPlanOverview";
 import { resolveCodexAccountDisplayName } from "../utils/codexAccountDisplayName";
+import { getAntigravityModelDisplayName } from "../utils/antigravityModels";
 import type { Account } from "../types/account";
 import type {
   CodebuddyAccount,
@@ -26,6 +27,7 @@ import {
 import { getMiniMaxCodeQuotaGroups } from "../utils/minimaxCode/parser";
 import type { ZedAccount } from "../types/zed";
 import type { ZcodeAccount } from "../types/zcode";
+import type { T3CodeAccount } from "../types/t3code";
 import {
   formatResetTimeDisplay,
   getAntigravityTierBadge,
@@ -149,6 +151,13 @@ import {
   getZcodeQuotaGroups,
   getZcodeUsage,
 } from "../types/zcode";
+import {
+  getT3codeAccountDisplayEmail,
+  getT3codePlanBadge,
+  getT3codeQuotaGroups,
+  getT3codeUsage,
+  hasT3codeResolvedIdentity,
+} from "../types/t3code";
 import type { DisplayGroup } from "../services/groupService";
 import type { OfficialQuotaModel } from "../types/codebuddy-suite";
 import { getQuotaCategoryGroups } from "../utils/codebuddy-suite";
@@ -215,6 +224,7 @@ export type AgQuotaDisplayItem = {
   percentage: number;
   resetTime: string;
   stale?: boolean;
+  blockedByWeekly?: boolean;
 };
 
 export type CreditMetrics = {
@@ -540,35 +550,34 @@ export function getAntigravityQuotaDisplayItems(
   const models = account.quota?.models || [];
   const tier = getSubscriptionTier(account.quota);
   const isFree = tier === 'FREE';
-  const stale = !isFree && (account.quota?.quota_summary_stale || undefined);
+  const stale = account.quota?.quota_summary_stale || undefined;
+  // Model percentages can stand in for legacy records only. A modern summary
+  // may omit a window or be unavailable while model data still succeeds.
+  const legacyModels = !stale && account.quota?.quota_summary_updated_at == null ? models : [];
   const result: AgQuotaDisplayItem[] = [];
-  const isNonArgonGemini = (rawName: string) => {
+  const isSharedGemini = (rawName: string) => {
     const name = rawName.toLowerCase();
-    return name.includes('gemini') && !name.includes('argon');
+    return name.includes('gemini') && !name.includes('argon') && !name.includes('carbon');
   };
 
   let claude5h: (typeof models)[0] | undefined;
   let claudeWeekly: (typeof models)[0] | undefined;
   let gemini5h: (typeof models)[0] | undefined;
   let geminiWeekly: (typeof models)[0] | undefined;
-  const argonWeekly = models.find(({ name }) =>
-    name === 'argon:weekly' || (name.startsWith('gemini-argon-') && name.endsWith('-weekly')),
+  const carbonWeekly = models.find(({ name }) =>
+    name === 'carbon:weekly' || name === 'gemini-carbon-wtu-weekly',
   );
 
   if (isFree) {
     // 免费账号仅有 Weekly 额度，不显示 5h 额度
     claudeWeekly =
       models.find((m) => m.name === '3p-weekly' || m.name === 'claude:weekly') ||
-      models.find((m) => m.name.toLowerCase().includes('claude'));
+      legacyModels.find((m) => m.name.toLowerCase().includes('claude'));
 
     geminiWeekly =
       models.find((m) => m.name === 'gemini-weekly' || m.name === 'gemini:weekly') ||
-      models.find((m) => isNonArgonGemini(m.name));
+      legacyModels.find((m) => isSharedGemini(m.name));
   } else {
-    // Legacy responses had model quotas only. A current or failed summary has
-    // distinct windows, and a missing window stays unknown.
-    const legacyModels = !stale && account.quota?.quota_summary_updated_at == null ? models : [];
-
     // Claude 5h
     claude5h = models.find((m) => m.name === '3p-5h' || m.name === 'claude:5h');
     if (!claude5h) {
@@ -595,29 +604,29 @@ export function getAntigravityQuotaDisplayItems(
     if (!gemini5h) {
       gemini5h = legacyModels.find((m) => {
         const name = m.name.toLowerCase();
-        return isNonArgonGemini(name) && name.includes('pro') && name.includes('high');
+        return isSharedGemini(name) && name.includes('pro') && name.includes('high');
       });
     }
     if (!gemini5h) {
       gemini5h = legacyModels.find((m) => {
         const name = m.name.toLowerCase();
-        return isNonArgonGemini(name) && name.includes('high');
+        return isSharedGemini(name) && name.includes('high');
       });
     }
     if (!gemini5h) {
       gemini5h = legacyModels.find((m) => {
         const name = m.name.toLowerCase();
-        return isNonArgonGemini(name) && name.includes('flash');
+        return isSharedGemini(name) && name.includes('flash');
       });
     }
     if (!gemini5h) {
       gemini5h = legacyModels.find((m) => {
         const name = m.name.toLowerCase();
-        return isNonArgonGemini(name) && !name.includes('low');
+        return isSharedGemini(name) && !name.includes('low');
       });
     }
     if (!gemini5h) {
-      gemini5h = legacyModels.find((m) => isNonArgonGemini(m.name));
+      gemini5h = legacyModels.find((m) => isSharedGemini(m.name));
     }
 
     // Gemini Weekly
@@ -625,24 +634,28 @@ export function getAntigravityQuotaDisplayItems(
     if (!geminiWeekly) {
       geminiWeekly = legacyModels.find((m) => {
         const name = m.name.toLowerCase();
-        return isNonArgonGemini(name) && name.includes('pro') && name.includes('low');
+        return isSharedGemini(name) && name.includes('pro') && name.includes('low');
       });
     }
     if (!geminiWeekly) {
       geminiWeekly = legacyModels.find((m) => {
         const name = m.name.toLowerCase();
-        return isNonArgonGemini(name) && name.includes('low');
+        return isSharedGemini(name) && name.includes('low');
       });
     }
   }
 
-  if (claude5h) {
+  const claudeWeeklyResetAt = Date.parse(claudeWeekly?.reset_time ?? '');
+  const claude5hBlocked = !isFree && !stale && claudeWeekly?.summary_exhausted === true
+    && (Number.isNaN(claudeWeeklyResetAt) || claudeWeeklyResetAt > Date.now());
+  if (claude5h || claude5hBlocked) {
     result.push({
       key: 'claude:5h',
       label: 'Claude (5h)',
-      percentage: claude5h.percentage,
-      resetTime: claude5h.reset_time,
+      percentage: claude5h?.percentage ?? 0,
+      resetTime: claude5h?.reset_time ?? '',
       stale,
+      blockedByWeekly: claude5hBlocked,
     });
   }
   if (claudeWeekly) {
@@ -672,12 +685,12 @@ export function getAntigravityQuotaDisplayItems(
       stale,
     });
   }
-  if (argonWeekly) {
+  if (carbonWeekly) {
     result.push({
-      key: 'argon:weekly',
-      label: 'Gemini 4 Argon (Weekly)',
-      percentage: argonWeekly.percentage,
-      resetTime: argonWeekly.reset_time,
+      key: 'carbon:weekly',
+      label: 'Gemini 4 Carbon (Weekly)',
+      percentage: carbonWeekly.percentage,
+      resetTime: carbonWeekly.reset_time,
       stale,
     });
   }
@@ -689,6 +702,7 @@ const ANTIGRAVITY_QUOTA_WINDOW_IDS = new Set([
   '3p-5h', '3p-weekly', 'claude:5h', 'claude:weekly',
   'gemini-5h', 'gemini-weekly', 'gemini:5h', 'gemini:weekly',
   'gemini-argon-5h', 'argon:5h', 'argon:weekly',
+  'carbon:weekly', 'gemini-carbon-wtu-weekly',
 ]);
 
 export function getAntigravityModelQuotaDisplayItems(account: Account): AgQuotaDisplayItem[] {
@@ -699,7 +713,7 @@ export function getAntigravityModelQuotaDisplayItems(account: Account): AgQuotaD
     )
     .map((model) => ({
       key: model.name,
-      label: model.display_name || model.name,
+      label: model.display_name || getAntigravityModelDisplayName(model.name),
       percentage: model.percentage,
       resetTime: model.reset_time,
     }));
@@ -714,19 +728,34 @@ export function buildAntigravityAccountPresentation(
   const quotaItems = getAntigravityQuotaDisplayItems(
     account,
     displayGroups,
-  ).map((item) => ({
-    key: item.key,
-    label: item.label,
-    percentage: item.percentage,
-    quotaClass: getAntigravityQuotaClass(item.percentage),
-    valueText: `${item.percentage}%`,
-    hintText: item.stale ? t('common.shared.quota.cachedRefreshFailed') : undefined,
-    resetText: [
-      item.stale ? t('common.shared.quota.cachedRefreshFailed') : '',
-      item.resetTime ? formatResetTimeDisplay(item.resetTime, t) : '',
-    ].filter(Boolean).join(' · '),
-    resetAt: item.resetTime,
-  }));
+  ).map((item) => {
+    if (item.blockedByWeekly) {
+      const reason = t('common.shared.quota.weeklyLimitReached');
+      return {
+        key: item.key,
+        label: item.label,
+        percentage: 0,
+        quotaClass: 'neutral',
+        valueText: '—',
+        hintText: reason,
+        resetText: reason,
+        showProgress: false,
+      };
+    }
+    return {
+      key: item.key,
+      label: item.label,
+      percentage: item.percentage,
+      quotaClass: getAntigravityQuotaClass(item.percentage),
+      valueText: `${item.percentage}%`,
+      hintText: item.stale ? t('common.shared.quota.cachedRefreshFailed') : undefined,
+      resetText: [
+        item.stale ? t('common.shared.quota.cachedRefreshFailed') : '',
+        item.resetTime ? formatResetTimeDisplay(item.resetTime, t) : '',
+      ].filter(Boolean).join(' · '),
+      resetAt: item.resetTime,
+    };
+  });
 
   return {
     id: account.id,
@@ -853,14 +882,9 @@ export function buildCodexAccountPresentation(
   // Verified bindings borrow original account display data only. Endpoint
   // credentials, eligibility and runtime health never consume this copy.
   account = getCodexServiceAccountDisplay(account);
-  const plan = account.plan_type?.toLowerCase() ?? "";
-  const workspaceName = account.account_name?.trim();
-  let displayName = account.email;
-  if (isCodexApiKeyAccount(account)) {
-    displayName = resolveCodexAccountDisplayName(account, t("common.apiKeyAccount"));
-  } else if ((plan.includes("team") || plan.includes("business")) && workspaceName && workspaceName !== account.email) {
-    displayName = account.email ? `${workspaceName} (${account.email})` : workspaceName;
-  }
+  const displayName = isCodexApiKeyAccount(account)
+    ? resolveCodexAccountDisplayName(account, t("common.apiKeyAccount"))
+    : account.email;
   const effectiveQuota = getCodexEffectiveQuotaPercentages(account.quota);
   const weeklyBlocksHourlyHint = effectiveQuota.weeklyBlocksHourly
     ? t("codex.quota.weeklyBlocksHourly", "周额度为 0，5小时额度已不可用")
@@ -1612,6 +1636,62 @@ export function buildZcodeAccountPresentation(
       t,
       "zcode.usageNormal",
       "zcode.usageAbnormal",
+    ),
+  };
+}
+
+export function buildT3codeAccountPresentation(
+  account: T3CodeAccount,
+  t: Translate,
+): UnifiedAccountPresentation {
+  const planLabel = getT3codePlanBadge(account, t("t3code.planUnlinked"));
+  const usage = getT3codeUsage(account);
+  const quotaItems: UnifiedQuotaMetric[] = [];
+
+  getT3codeQuotaGroups(account, t).forEach((group) => {
+    group.items.forEach((resource, index) => {
+      const remainPercent =
+        resource.remainPercent ??
+        (resource.total > 0 ? (resource.remain / resource.total) * 100 : null);
+      quotaItems.push({
+        key: `${group.key}_${resource.packageCode || index}`,
+        label: resource.packageName || group.label,
+        percentage: clampPercent(resource.usedPercent),
+        progressPercent: clampPercent(resource.usedPercent),
+        quotaClass: getRemainingQuotaClass(remainPercent ?? 0),
+        valueText: t("t3code.quota.usedOfTotal", {
+          used: formatQuotaNumber(resource.used),
+          total: formatQuotaNumber(resource.total),
+          defaultValue: "{{used}} / {{total}}",
+        }),
+        resetText: resolveResourceTimeText(
+          resource,
+          t,
+          "t3code.quota.updatedAt",
+          "t3code.quota.expireAt",
+        ),
+        resetAt: resource.refreshAt ?? resource.expireAt,
+        used: resource.used,
+        total: resource.total,
+        left: resource.remain,
+        showProgress: true,
+      });
+    });
+  });
+
+  return {
+    id: account.id,
+    displayName: hasT3codeResolvedIdentity(account)
+      ? getT3codeAccountDisplayEmail(account)
+      : t("t3code.pendingSyncIdentity"),
+    planLabel,
+    planClass: resolveSimplePlanClass(planLabel),
+    quotaItems,
+    ...buildUsageStatusSubline(
+      usage.isNormal,
+      t,
+      "t3code.usageNormal",
+      quotaItems.length || account.quota_query_last_error ? "t3code.usageAbnormal" : "t3code.usagePending",
     ),
   };
 }

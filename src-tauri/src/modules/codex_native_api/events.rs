@@ -348,7 +348,9 @@ impl SseDecoder {
         })?;
         let mut changed = false;
         let mut preserve_failure_wire = false;
-        let terminal = response_terminal_kind(&value);
+        let terminal = terminal_kind_for_event(&value, fields.event.as_deref());
+        let declared_metadata = terminal.is_none()
+            && super::upstream_errors::has_error_payload(&value, None);
         let flat_error = super::upstream_errors::flat_error_details(&value);
         if let Some(object) = value.as_object_mut() {
             let kind = object
@@ -376,11 +378,15 @@ impl SseDecoder {
                     // than the SSE event kind. Preserve it before normalization.
                     if declared_failure && !kind.is_empty() && !failure_kind(&kind) {
                         preserve_failure_wire = true;
-                        let nested = object.get("error").is_some_and(|error| !error.is_null())
+                        let nested = object.get("error").is_some_and(super::upstream_errors::error_value)
                             || object
                                 .get("response")
                                 .and_then(|response| response.get("error"))
-                                .is_some_and(|error| !error.is_null());
+                                .is_some_and(super::upstream_errors::error_value)
+                            || object
+                                .get("body")
+                                .and_then(|body| body.get("error"))
+                                .is_some_and(super::upstream_errors::error_value);
                         if nested {
                             object
                                 .insert("original_error_type".into(), Value::String(kind.clone()));
@@ -391,13 +397,15 @@ impl SseDecoder {
                     object.insert("type".into(), Value::String(failure));
                     changed = true;
                 }
-            } else if kind.is_empty() {
+            } else if kind.is_empty() || declared_metadata {
                 if let Some(event) = fields.event.as_ref().filter(|event| !event.is_empty()) {
                     object.insert("type".into(), Value::String(event.clone()));
                     changed = true;
                 }
             }
         }
+        let normalized_error = super::upstream_errors::normalize_response_error(&mut value);
+        changed |= normalized_error;
         let identity_restored = self
             .output
             .as_ref()
@@ -432,7 +440,7 @@ impl SseDecoder {
             ));
         }
         self.terminal = response_terminal_kind(&value).is_some();
-        if changed && (!preserve_failure_wire || repaired_output) {
+        if changed && (!preserve_failure_wire || repaired_output || normalized_error) {
             wire.clear();
             for line in raw.split(|byte| *byte == b'\n') {
                 let line = line.strip_suffix(b"\r").unwrap_or(line);
@@ -611,14 +619,16 @@ impl IndependentDataLines {
 /// A failure status is authoritative even when an upstream uses a generic or
 /// stale event type. A created event is never a successful checkpoint.
 pub(super) fn response_terminal_kind(event: &Value) -> Option<&'static str> {
+    terminal_kind_for_event(event, None)
+}
+
+fn terminal_kind_for_event(event: &Value, declared_event: Option<&str>) -> Option<&'static str> {
     let kind = event
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
     let response = event.get("response").unwrap_or(event);
-    if event.get("error").is_some_and(|error| !error.is_null())
-        || response.get("error").is_some_and(|error| !error.is_null())
-    {
+    if super::upstream_errors::has_error_payload(event, declared_event) {
         return Some("error");
     }
     match response.get("status").and_then(Value::as_str) {
@@ -660,6 +670,36 @@ pub(super) fn completed_response(event: &Value) -> bool {
             .is_some_and(|id| !id.trim().is_empty())
         && !event.get("error").is_some_and(|error| !error.is_null())
         && !response.get("error").is_some_and(|error| !error.is_null())
+}
+
+/// Upstreams occasionally terminate a normally streaming response with a
+/// `response.incomplete` event that explains itself neither semantically
+/// (`incomplete_details` missing/null, or its reason null/"unknown") nor in
+/// usage (`usage` missing or zero). Codex clients parse that terminal as a
+/// non-retryable turn error (`Incomplete response returned, reason: unknown`)
+/// and abort the turn instead of running their built-in stream reconnect.
+pub(super) fn silent_incomplete_termination(event: &Value) -> bool {
+    if response_terminal_kind(event) != Some("response.incomplete") {
+        return false;
+    }
+    let response = event.get("response").unwrap_or(event);
+    let reason = response
+        .pointer("/incomplete_details/reason")
+        .and_then(Value::as_str)
+        .map(str::trim);
+    let explained = reason.is_some_and(|reason| {
+        !reason.is_empty() && !reason.eq_ignore_ascii_case("unknown")
+    });
+    if explained {
+        return false;
+    }
+    response
+        .get("usage")
+        .filter(|usage| !usage.is_null())
+        .map_or(true, |usage| {
+            usage.pointer("/input_tokens").and_then(Value::as_u64).unwrap_or(0) == 0
+                && usage.pointer("/output_tokens").and_then(Value::as_u64).unwrap_or(0) == 0
+        })
 }
 
 fn event_too_large() -> ServiceError {
@@ -1018,20 +1058,23 @@ pub(super) fn retry_after_event(event: &Value) -> Option<std::time::Duration> {
     let mut retain = |next: std::time::Duration| {
         delay = Some(delay.map_or(next, |current| current.max(next)));
     };
+    let body = super::upstream_errors::can_infer_wrapped_error(event, None)
+        .then(|| event.get("body")).flatten();
     for headers in [
         event.get("headers"),
         event.pointer("/error/headers"),
         event.pointer("/response/error/headers"),
-        event.pointer("/body/error/headers"),
-        event.pointer("/body/headers"),
+        body.and_then(|body| body.pointer("/error/headers")),
+        body.and_then(|body| body.get("headers")),
     ] {
         if let Some(headers) = headers.and_then(Value::as_object) {
             for (name, value) in headers {
                 if name.eq_ignore_ascii_case("retry-after") {
-                    if let Some(next) = value.as_str().and_then(parse_retry_after) {
-                        retain(next);
-                    } else if let Some(seconds) = value.as_u64() {
-                        retain(std::time::Duration::from_secs(seconds));
+                    let values = value.as_array().map_or_else(|| std::slice::from_ref(value), Vec::as_slice);
+                    for value in values {
+                        if let Some(next) = value.as_str().and_then(parse_retry_after).or_else(|| seconds(value)) {
+                            retain(next);
+                        }
                     }
                 }
             }
@@ -1043,8 +1086,8 @@ pub(super) fn retry_after_event(event: &Value) -> Option<std::time::Duration> {
         event.get("error"),
         event.get("response"),
         event.pointer("/response/error"),
-        event.get("body"),
-        event.pointer("/body/error"),
+        body,
+        body.and_then(|body| body.get("error")),
     ] {
         let Some(error) = error else {
             continue;

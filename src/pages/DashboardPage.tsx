@@ -1,6 +1,13 @@
-import { getRecommendedWorkbuddyAccount } from '../utils/floatingCardSelectors';
+import {
+  getRecommendedCodebuddyAccount,
+  getRecommendedCodebuddyCnAccount,
+  getRecommendedQoderAccount,
+  getRecommendedWorkbuddyAccount,
+  getRecommendedZcodeAccount,
+} from '../utils/floatingCardSelectors';
 import { useWorkbuddyAiAccountStore } from '../stores/useWorkbuddyAiAccountStore';
 import { resolveCodexAccountDisplayName } from "../utils/codexAccountDisplayName";
+import { codexWakeupResultLabel, useCodexAccountWakeupResults } from '../hooks/useCodexAccountWakeupResults';
 import React, { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAccountStore } from '../stores/useAccountStore';
@@ -15,6 +22,7 @@ import { useCodebuddyAccountStore } from '../stores/useCodebuddyAccountStore';
 import { useCodebuddyCnAccountStore } from '../stores/useCodebuddyCnAccountStore';
 import { useQoderAccountStore } from '../stores/useQoderAccountStore';
 import { useZcodeAccountStore } from '../stores/useZcodeAccountStore';
+import { useT3codeAccountStore } from '../stores/useT3codeAccountStore';
 import { useTraeAccountStore } from '../stores/useTraeAccountStore';
 import { useWorkbuddyAccountStore } from '../stores/useWorkbuddyAccountStore';
 import { useMinimaxCodeAccountStore } from '../stores/useMinimaxCodeAccountStore';
@@ -37,16 +45,11 @@ import { TagEditModal } from '../components/TagEditModal';
 import { Account } from '../types/account';
 import {
   CodebuddyAccount,
-  getCodebuddyResourceSummary,
-  getCodebuddyExtraCreditSummary,
-  getCodebuddyOfficialQuotaModel,
   getCodebuddyQuotaCategoryGroups,
 } from '../types/codebuddy';
-import {
-  QoderAccount,
-  getQoderSubscriptionInfo,
-} from '../types/qoder';
+import type { QoderAccount } from '../types/qoder';
 import type { ZcodeAccount } from '../types/zcode';
+import { T3codeDashboardCard } from '../components/t3code/T3codeDashboardCard';
 import {
   TraeAccount,
   getTraeAccountPlatformId,
@@ -55,7 +58,7 @@ import {
 import {
   WorkbuddyAccount,
 } from '../types/workbuddy';
-import { CodexAccount, getCodexQuotaWindows, isCodexAgentIdentityAccount, isCodexWebSessionAccount } from '../types/codex';
+import { CodexAccount, getCodexQuotaWindows, isCodexAgentIdentityAccount } from '../types/codex';
 import type { MinimaxCodeAccount } from '../types/minimaxCode';
 import { getMiniMaxCodeQuotaGroups } from '../utils/minimaxCode/parser';
 import { GitHubCopilotAccount } from '../types/githubCopilot';
@@ -78,14 +81,14 @@ import {
   isCodexNewApiAccount,
 } from '../types/codex';
 import { useCodexRelayBalanceDisabled } from '../hooks/useCodexRelayBalanceDisabled';
-import { canShowCodexProviderBalance, isDeepSeekAccount } from '../utils/codexDeepSeekAccess';
+import { canShowCodexProviderBalance, isDeepSeekAccount, isMoonshotBalanceUrl } from '../utils/codexDeepSeekAccess';
+import { ModelProviderUsagePanel } from '../components/model-provider/ModelProviderUsagePanel';
 import './DashboardPage.css';
 import apiKeyFunIcon from '../assets/icons/apikey-fun.png';
 import { RobotIcon } from '../components/icons/RobotIcon';
 import { CodexIcon } from '../components/icons/CodexIcon';
 import { requestCodexResetCreditDetails } from '../utils/codexResetCreditNavigation';
 import { CodexResetCreditExpiry } from '../components/CodexResetCreditExpiry';
-import { CodexResetAutomationStatus } from '../components/codex/CodexResetAutomation';
 import { WindsurfIcon } from '../components/icons/WindsurfIcon';
 import { KiroIcon } from '../components/icons/KiroIcon';
 import { CursorIcon } from '../components/icons/CursorIcon';
@@ -128,7 +131,7 @@ import {
 } from '../services/codexApiKeyUsageRefreshService';
 import {
   isModelProviderUsageUnavailableError,
-  resolveNewApiQuotaSnapshot,
+  presentNewApiQuota,
   type ModelProviderUsageSummary,
 } from '../services/modelProviderUsageService';
 import * as traeService from '../services/traeService';
@@ -351,6 +354,9 @@ export function DashboardPage({
         case 'zcode':
           await useZcodeAccountStore.getState().updateAccountTags(accountId, newTags);
           break;
+        case 't3code':
+          await useT3codeAccountStore.getState().updateAccountTags(accountId, newTags);
+          break;
         case 'trae':
           await useTraeAccountStore.getState().updateAccountTags(accountId, newTags);
           break;
@@ -400,6 +406,11 @@ export function DashboardPage({
         );
       }),
     [orderedEntryIds, hiddenEntrySet, platformGroups, remoteHiddenPlatformSet],
+  );
+  const wakeupResults = useCodexAccountWakeupResults(
+    showAllAccounts || (!remoteHiddenPlatformSet.has('codex') && visibleEntryOrder.some(
+      entryId => resolveEntryPlatformIds(entryId, platformGroups).includes('codex'),
+    )),
   );
   const visibleDashboardEntryOrder = useMemo<DashboardEntryId[]>(() => {
     const result: DashboardEntryId[] = [...visibleEntryOrder];
@@ -541,6 +552,11 @@ export function DashboardPage({
   } = useZcodeAccountStore();
 
   const {
+    accounts: t3codeAccounts,
+    fetchAccounts: fetchT3codeAccounts,
+  } = useT3codeAccountStore();
+
+  const {
     accounts: traeAccounts,
     currentAccountId: traeCurrentId,
     fetchAccounts: fetchTraeAccounts,
@@ -649,6 +665,7 @@ export function DashboardPage({
       fetchCodebuddyCnAccounts,
       fetchQoderAccounts,
       fetchZcodeAccounts,
+      fetchT3codeAccounts,
       fetchTraeAccounts,
       fetchWorkbuddyAccounts,
       fetchWorkbuddyAiAccounts,
@@ -697,6 +714,7 @@ export function DashboardPage({
         codebuddyCnAccounts.length +
         qoderAccounts.length +
         zcodeAccounts.length +
+        t3codeAccounts.length +
         traeAccounts.length +
         workbuddyAccounts.length +
         workbuddyAiAccounts.length +
@@ -713,6 +731,7 @@ export function DashboardPage({
       codebuddy_cn: codebuddyCnAccounts.length,
       qoder: qoderAccounts.length,
       zcode: zcodeAccounts.length,
+      t3code: t3codeAccounts.length,
       trae: traeAccountsByPlatform.trae.length,
       trae_solo: traeAccountsByPlatform.trae_solo.length,
       trae_cn: traeAccountsByPlatform.trae_cn.length,
@@ -720,7 +739,7 @@ export function DashboardPage({
       workbuddy: workbuddyAccounts.length,
       minimaxcode: minimaxCodeAccounts.length,
     };
-  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, traeAccounts, traeAccountsByPlatform, workbuddyAccounts, workbuddyAiAccounts, minimaxCodeAccounts]);
+  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, t3codeAccounts, traeAccounts, traeAccountsByPlatform, workbuddyAccounts, workbuddyAiAccounts, minimaxCodeAccounts]);
 
   const dashboardAvailableTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -737,6 +756,7 @@ export function DashboardPage({
       ...codebuddyCnAccounts,
       ...qoderAccounts,
       ...zcodeAccounts,
+      ...t3codeAccounts,
       ...traeAccounts,
       ...workbuddyAccounts,
       ...workbuddyAiAccounts,
@@ -750,7 +770,7 @@ export function DashboardPage({
       }
     }
     return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
-  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, traeAccounts, workbuddyAccounts, workbuddyAiAccounts, minimaxCodeAccounts]);
+  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, t3codeAccounts, traeAccounts, workbuddyAccounts, workbuddyAiAccounts, minimaxCodeAccounts]);
 
 
   // Refresh States
@@ -780,6 +800,7 @@ export function DashboardPage({
     codebuddyCn: boolean;
     qoder: boolean;
     zcode: boolean;
+    t3code: boolean;
     trae: boolean;
     workbuddy: boolean;
   workbuddy_ai: boolean;
@@ -797,6 +818,7 @@ export function DashboardPage({
     codebuddyCn: false,
     qoder: false,
     zcode: false,
+    t3code: false,
     trae: false,
     workbuddy: false,
     workbuddy_ai: false,
@@ -880,7 +902,7 @@ export function DashboardPage({
     if (!showCodexBalance(account)) return;
     if (
       isCodexChatCompletionsApiKeyAccount(account) &&
-      !isDeepSeekAccount(account)
+      !isDeepSeekAccount(account) && !isMoonshotBalanceUrl(account.api_base_url)
     ) {
       return;
     }
@@ -1680,7 +1702,7 @@ export function DashboardPage({
       if (
         !account || !showCodexBalance(account) ||
         (isCodexChatCompletionsApiKeyAccount(account) &&
-          !isDeepSeekAccount(account))
+          !isDeepSeekAccount(account) && !isMoonshotBalanceUrl(account.api_base_url))
       ) {
         return;
       }
@@ -1969,122 +1991,25 @@ export function DashboardPage({
     });
   }, [grokAccounts, grokCurrent?.id]);
 
-  const codebuddyRecommended = useMemo(() => {
-    if (codebuddyAccounts.length <= 1) return null;
-    const currentId = codebuddyCurrent?.id;
-    const others = codebuddyAccounts.filter((a) => a.id !== currentId);
-    if (others.length === 0) return null;
+  const codebuddyRecommended = useMemo(
+    () => getRecommendedCodebuddyAccount(codebuddyAccounts, codebuddyCurrent?.id),
+    [codebuddyAccounts, codebuddyCurrent?.id],
+  );
 
-    const getScore = (account: CodebuddyAccount) => {
-      const resource = getCodebuddyResourceSummary(account);
-      const extra = getCodebuddyExtraCreditSummary(account);
-      const remain = resource?.remainPercent ?? (extra.remainPercent ?? -1);
-      return {
-        remainPercent: remain,
-        freshness: account.last_used || account.created_at || 0,
-      };
-    };
+  const codebuddyCnRecommended = useMemo(
+    () => getRecommendedCodebuddyCnAccount(codebuddyCnAccounts, codebuddyCnCurrent?.id),
+    [codebuddyCnAccounts, codebuddyCnCurrent?.id],
+  );
 
-    return others.reduce((best, candidate) => {
-      const bestScore = getScore(best);
-      const candidateScore = getScore(candidate);
-      if (candidateScore.remainPercent !== bestScore.remainPercent) {
-        return candidateScore.remainPercent > bestScore.remainPercent ? candidate : best;
-      }
-      return candidateScore.freshness > bestScore.freshness ? candidate : best;
-    });
-  }, [codebuddyAccounts, codebuddyCurrent?.id]);
+  const qoderRecommended = useMemo(
+    () => getRecommendedQoderAccount(qoderAccounts, qoderCurrent?.id),
+    [qoderAccounts, qoderCurrent?.id],
+  );
 
-
-  const codebuddyCnRecommended = useMemo(() => {
-    if (codebuddyCnAccounts.length <= 1) return null;
-    const currentId = codebuddyCnCurrent?.id;
-    const others = codebuddyCnAccounts.filter((a) => a.id !== currentId);
-    if (others.length === 0) return null;
-
-    const getScore = (account: CodebuddyAccount) => {
-      const model = getCodebuddyOfficialQuotaModel(account);
-      // 只使用基础包进行计算，不包含加量包
-      const baseResources = model.resources.filter(r => r.total > 0 || r.remain > 0);
-
-      // 计算平均剩余百分比（剩余越多越好）
-      let avgRemainPercent = -1;
-      if (baseResources.length > 0) {
-        const totalRemainPercent = baseResources.reduce((sum, r) => {
-          const pct = r.remainPercent ?? (r.total > 0 ? Math.max(0, (r.remain / r.total) * 100) : 0);
-          return sum + pct;
-        }, 0);
-        avgRemainPercent = totalRemainPercent / baseResources.length;
-      }
-
-      return {
-        remaining: avgRemainPercent, // 剩余百分比越高越好
-        freshness: account.last_used || account.created_at || 0,
-      };
-    };
-
-    return others.reduce((best, candidate) => {
-      const bestScore = getScore(best);
-      const candidateScore = getScore(candidate);
-      if (candidateScore.remaining !== bestScore.remaining) {
-        return candidateScore.remaining > bestScore.remaining ? candidate : best;
-      }
-      return candidateScore.freshness > bestScore.freshness ? candidate : best;
-    });
-  }, [codebuddyCnAccounts, codebuddyCnCurrent?.id]);
-
-  const qoderRecommended = useMemo(() => {
-    if (qoderAccounts.length <= 1) return null;
-    const currentId = qoderCurrent?.id;
-    const others = qoderAccounts.filter((a) => a.id !== currentId);
-    if (others.length === 0) return null;
-
-    const getScore = (account: QoderAccount) => {
-      const sub = getQoderSubscriptionInfo(account);
-      const usedPercent = sub.totalUsagePercentage ?? sub.userQuota.percentage ?? 101;
-      return {
-        remaining: 100 - usedPercent,
-        freshness: account.last_used || account.created_at || 0,
-      };
-    };
-
-    return others.reduce((best, candidate) => {
-      const bestScore = getScore(best);
-      const candidateScore = getScore(candidate);
-      if (candidateScore.remaining !== bestScore.remaining) {
-        return candidateScore.remaining > bestScore.remaining ? candidate : best;
-      }
-      return candidateScore.freshness > bestScore.freshness ? candidate : best;
-    });
-  }, [qoderAccounts, qoderCurrent?.id]);
-
-  const zcodeRecommended = useMemo(() => {
-    if (zcodeAccounts.length <= 1) return null;
-    const currentId = zcodeCurrent?.id;
-    const others = zcodeAccounts.filter((account) => account.id !== currentId);
-    if (others.length === 0) return null;
-
-    const getScore = (account: ZcodeAccount) => {
-      const total = account.quota_total;
-      const remaining = account.quota_remaining;
-      return {
-        remaining:
-          typeof total === 'number' && total > 0 && typeof remaining === 'number'
-            ? (remaining / total) * 100
-            : -1,
-        freshness: account.last_used || account.created_at || 0,
-      };
-    };
-
-    return others.reduce((best, candidate) => {
-      const bestScore = getScore(best);
-      const candidateScore = getScore(candidate);
-      if (candidateScore.remaining !== bestScore.remaining) {
-        return candidateScore.remaining > bestScore.remaining ? candidate : best;
-      }
-      return candidateScore.freshness > bestScore.freshness ? candidate : best;
-    });
-  }, [zcodeAccounts, zcodeCurrent?.id]);
+  const zcodeRecommended = useMemo(
+    () => getRecommendedZcodeAccount(zcodeAccounts, zcodeCurrent?.id),
+    [zcodeAccounts, zcodeCurrent?.id],
+  );
 
   const getTraeCurrentForPlatform = (platformId: TraePlatformId): TraeAccount | null => {
     const currentId = traeCurrentIdsByPlatform[platformId] ?? (platformId === 'trae' ? traeCurrentId : null);
@@ -2345,12 +2270,14 @@ export function DashboardPage({
                 <span className="model-name">{item.label}</span>
                 <span className={`model-pct ${item.quotaClass}`}>{item.valueText}</span>
               </div>
-              <div className="mini-progress-track">
-                <div
-                  className={`mini-progress-bar ${item.quotaClass}`}
-                  style={{ width: `${item.percentage}%` }}
-                />
-              </div>
+              {item.showProgress !== false && (
+                <div className="mini-progress-track">
+                  <div
+                    className={`mini-progress-bar ${item.quotaClass}`}
+                    style={{ width: `${item.percentage}%` }}
+                  />
+                </div>
+              )}
               {item.resetText && (
                 <div className="mini-reset-time">
                   {item.resetText}
@@ -2391,6 +2318,8 @@ export function DashboardPage({
 
   const renderCodexAccountContent = (account: CodexAccount | null) => {
     if (!account) return <div className="empty-slot">{t('dashboard.noAccount', '无账号')}</div>;
+    const wakeupResult = wakeupResults.get(account.id);
+    const wakeupLabel = wakeupResult ? codexWakeupResultLabel(wakeupResult, t) : undefined;
 
     if (isCodexApiKeyAccount(account) && !isCodexNewApiAccount(account)) {
       const isChatCompletionsApiKey =
@@ -2412,17 +2341,11 @@ export function DashboardPage({
         const item = usageSummary?.details?.find((detail) => detail.key === key);
         return item?.value || '-';
       };
-      const newApiQuota = resolveNewApiQuotaSnapshot(usageSummary);
-      const newApiGranted = newApiQuota.granted;
-      const newApiAvailable = newApiQuota.available;
-      const newApiExpiresAt = newApiQuota.expiresAt;
-      const isUnlimited = usageSummary?.quotaUnlimited === true;
-      const progressPercent =
-        usageMode === 'new_api' && newApiGranted != null && newApiAvailable != null && newApiGranted > 0
-          ? Math.max(0, Math.min(100, Math.round(((newApiGranted - newApiAvailable) / newApiGranted) * 100)))
-          : isUnlimited
-            ? 100
-            : 0;
+      const newApiQuota = presentNewApiQuota(
+        usageSummary,
+        t('codex.newApi.quota.unlimited', '不限量'),
+        t('dashboard.noData', '暂无数据'),
+      );
 
       return (
         <div className={`account-mini-card codex-api-mini-card ${account.api_provider_id ? "sponsor-api-account" : ""}`}>
@@ -2437,29 +2360,27 @@ export function DashboardPage({
             </div>
           </div>
 
-          {showCodexBalance(account) && (!isChatCompletionsApiKey || isDeepSeekAccount(account)) && (
+          {wakeupLabel && <div className="account-mini-subline" title={wakeupLabel}>{wakeupLabel}</div>}
+          {showCodexBalance(account) && (!isChatCompletionsApiKey || isDeepSeekAccount(account) || usageSummary?.mode === 'custom') && (
             <div className="account-mini-quotas codex-api-mini-quotas">
-              {usageMode === 'new_api' ? (
+              {usageSummary?.mode === 'custom' ? (
+                <ModelProviderUsagePanel summary={usageSummary} variant="card" />
+              ) : usageMode === 'new_api' ? (
                 <div className="mini-quota-row-stacked">
                   <div className="mini-quota-header">
                     <span className="model-name">{t('codex.cockpitApi.balance', '额度')}</span>
                     <span className="model-pct high">
-                      {isUnlimited
-                        ? t('codex.newApi.quota.unlimited', '不限量')
-                        : newApiAvailable != null && newApiGranted != null
-                          ? `$${newApiAvailable.toFixed(2)} / $${newApiGranted.toFixed(2)}`
-                          : '-'}
+                      {newApiQuota.text}
                     </span>
                   </div>
-                  <div className="mini-progress-track">
-                    <div
-                      className="mini-progress-bar high"
-                      style={{ width: `${progressPercent}%` }}
-                    />
-                  </div>
+                  {newApiQuota.percent != null && (
+                    <div className="mini-progress-track">
+                      <div className="mini-progress-bar high" style={{ width: `${newApiQuota.percent}%` }} />
+                    </div>
+                  )}
                   <div className="mini-reset-time">
-                    {newApiExpiresAt != null && newApiExpiresAt > 0
-                      ? `${t('codex.modelProviders.usage.fields.expiresAt', '过期时间')} ${new Date(newApiExpiresAt * 1000).toLocaleDateString()}`
+                    {newApiQuota.expiresAt != null && newApiQuota.expiresAt > 0
+                      ? `${t('codex.modelProviders.usage.fields.expiresAt', '过期时间')} ${new Date(newApiQuota.expiresAt * 1000).toLocaleDateString()}`
                       : t('dashboard.noData', '暂无数据')}
                   </div>
                 </div>
@@ -2500,7 +2421,7 @@ export function DashboardPage({
           )}
 
           <div className="account-mini-actions icon-only-row">
-            {showCodexBalance(account) && (!isChatCompletionsApiKey || isDeepSeekAccount(account)) && (
+            {showCodexBalance(account) && (!isChatCompletionsApiKey || isDeepSeekAccount(account) || usageSummary?.mode === 'custom') && (
               <button
                 className="mini-icon-btn"
                 onClick={() => void refreshCodexApiUsage(account, { force: true })}
@@ -2525,6 +2446,7 @@ export function DashboardPage({
     const presentation = buildCodexAccountPresentation(account, t);
     return renderUnifiedAccountCard({
       presentation,
+      sublineText: wakeupLabel,
       showMetrics: showCodexBalance(account),
       onRefresh: showCodexBalance(account) ? () => handleRefreshCodex(account.id) : undefined,
       onSwitch: () => switchCodexAccount(account.id),
@@ -2536,7 +2458,6 @@ export function DashboardPage({
           {!isCodexAgentIdentityAccount(account) && <button type="button" className={`codex-reset-credit-pill ${(account.quota?.reset_credits_available ?? 0) > 0 ? 'is-available' : 'is-unavailable'}`}
             onClick={() => { requestCodexResetCreditDetails(account.id); onNavigate('codex'); }}>
             <RotateCw size={13} />{typeof account.quota?.reset_credits_available === 'number' ? t('codex.quota.resetCredits', { count: account.quota.reset_credits_available }) : t('codex.quota.resetCreditDetailsTitle')}
-            {!isCodexWebSessionAccount(account) && <CodexResetAutomationStatus accountId={account.id} />}
           </button>}
           <CodexResetCreditExpiry key={account.id} accountId={account.id} quota={account.quota}
             disabled={refreshing.has(account.id)} onClick={() => { requestCodexResetCreditDetails(account.id); onNavigate('codex'); }} />
@@ -2553,7 +2474,7 @@ export function DashboardPage({
         isCodexApiKeyAccount(account!) &&
         !isCodexNewApiAccount(account!) &&
         (!isCodexChatCompletionsApiKeyAccount(account!) ||
-          isDeepSeekAccount(account!)),
+          isDeepSeekAccount(account!) || isMoonshotBalanceUrl(account!.api_base_url)),
     );
     targetAccounts.forEach((account) => {
       const usageState = codexApiUsageMap[account.id];
@@ -2797,6 +2718,7 @@ export function DashboardPage({
     codebuddy_cn: stats.codebuddy_cn,
     qoder: stats.qoder,
     zcode: stats.zcode,
+    t3code: stats.t3code,
     trae: stats.trae,
     trae_solo: stats.trae_solo,
     trae_cn: stats.trae_cn,
@@ -3504,6 +3426,17 @@ export function DashboardPage({
             {t('dashboard.viewAllAccounts', '查看所有账号')}
           </button>
         </div>
+      );
+    }
+
+    if (platformId === 't3code') {
+      return (
+        <T3codeDashboardCard
+          key={platformId}
+          maskAccountText={maskAccountText}
+          hideCardButton={renderHideCardButton(platformId)}
+          onNavigate={onNavigate}
+        />
       );
     }
 

@@ -2032,7 +2032,9 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
       const result = await accountService.importFromFiles(paths)
       const { imported, failed } = result
       await fetchAccounts()
-      await Promise.allSettled(imported.map((acc) => refreshQuota(acc.id, antigravityRuntimeTarget)))
+      await Promise.allSettled(
+        imported.filter((account) => !account.pending_oauth).map((account) => refreshQuota(account.id, antigravityRuntimeTarget)),
+      )
       await fetchAccounts()
       await assignAccountsToAddTargetGroup(imported)
       if (imported.length === 0 && failed.length === 0) {
@@ -2732,10 +2734,28 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
     />
   );
 
+  const renderAccountTags = (account: Account) => {
+    const tags = (account.tags ?? []).map((tag) => tag.trim()).filter(Boolean)
+    if (tags.length === 0) return null
+    const visible = tags.slice(0, 2)
+    const remaining = tags.slice(2)
+    return (
+      <>
+        {visible.map((tag, index) => (
+          <span key={`${tag}-${index}`} className="tag-pill" title={tag}>{tag}</span>
+        ))}
+        {remaining.length > 0 && (
+          <span className="tag-pill more" title={remaining.join(', ')}>+{remaining.length}</span>
+        )}
+      </>
+    )
+  }
+
   const renderGridCards = (items: Account[], groupKey?: string) =>
     items.map((account) => {
       const isCurrent = currentAccount?.id === account.id
       const tierBadge = getAntigravityTierBadge(account.quota)
+      const accountTags = renderAccountTags(account)
       const availableCreditsDisplay = getAvailableAICreditsDisplay(account)
       const isDisabled = account.disabled
       const isForbidden = Boolean(account.quota?.is_forbidden)
@@ -2747,9 +2767,6 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
         (quotaError?.reason === 'SUBSCRIPTION_REQUIRED' ||
           Boolean(quotaError?.message?.includes('valid license')))
       const hasQuotaError = Boolean(quotaError?.message) && !isSpuriousSubscriptionError
-      const accountTags = (account.tags || []).map((tag) => tag.trim()).filter(Boolean)
-      const visibleTags = accountTags.slice(0, 2)
-      const moreTagCount = Math.max(0, accountTags.length - visibleTags.length)
       const warning = refreshWarnings[account.email]
       const warningLabel =
         warning?.kind === 'auth'
@@ -2904,7 +2921,7 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
             </div>
           )}
 
-          <div className="card-quota-grid">
+          <div className="card-quota-grid antigravity-card-quota">
             {isForbidden ? (
               <div className="quota-forbidden" title={forbiddenTitle}>
                 <Lock size={14} />
@@ -2920,25 +2937,16 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
                 {renderCustomQuotaSection(account, false)}
               </>
             )}
-            <div className="quota-credits-field">
+            {availableCreditsDisplay !== '' && <div className="quota-credits-field">
               <span className="quota-credits-label">
                 {t('common.shared.credits.availableAiCredits', 'Available AI Credits')}: {availableCreditsDisplay}
               </span>
-            </div>
+            </div>}
           </div>
 
-          {accountTags.length > 0 && (
-            <div className="card-tags">
-              {visibleTags.map((tag, idx) => (
-                <span key={`${account.id}-${tag}-${idx}`} className="tag-pill">
-                  {tag}
-                </span>
-              ))}
-              {moreTagCount > 0 && <span className="tag-pill more">+{moreTagCount}</span>}
-            </div>
-          )}
+          {accountTags && <div className="card-tags">{accountTags}</div>}
           <div className="card-footer antigravity-card-footer">
-            <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} createdAt={account.created_at} formatDate={formatDate} />
+            <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} refreshAt={account.quota?.last_updated} createdAt={account.created_at} formatDate={formatDate} />
             <div className="card-actions">
               {isPendingAntigravityAccount(account) && (
                 <button
@@ -3107,6 +3115,8 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
       items.map((account) => {
         const isCurrent = currentAccount?.id === account.id
         const tierBadge = getAntigravityTierBadge(account.quota)
+        const credits = getAvailableAICreditsDisplay(account)
+        const creditsText = credits === '' ? '' : `${t('common.shared.credits.availableAiCredits')}: ${credits}`
         const quotas = getAccountQuotas(account)
         const overallQuota = calculateOverallQuota(quotas)
         const isSelected = selected.has(account.id)
@@ -3159,7 +3169,7 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
         return (
           <div
             key={account.id}
-            className={`${styles.card} ${isCurrent ? styles.cardCurrent : ''} ${isSelected ? styles.cardSelected : ''} ${isSwitching ? styles.cardSwitching : ''}`}
+            className={`${styles.card} ${styles.antigravityCard} ${isCurrent ? styles.cardCurrent : ''} ${isSelected ? styles.cardSelected : ''} ${isSwitching ? styles.cardSwitching : ''}`}
             onClick={() => {
               if (!switching) toggleSelect(account.id)
             }}
@@ -3190,7 +3200,6 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
             <span className={`tier-badge ${tierBadge.className}`}>
               {tierBadge.label}
             </span>
-            <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} createdAt={account.created_at} formatDate={formatDate} />
             <div className={styles.quotas}>
               {groupQuotas.length > 0 ? (
                 groupQuotas.map((gq) => (
@@ -3203,6 +3212,7 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
                       className={styles.dot}
                       style={{ background: gq.color }}
                     />
+                    <span className={styles.quotaGroupName}>{gq.name}</span>
                     {gq.percentage}%
                   </span>
                 ))
@@ -3248,6 +3258,10 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
             >
               <Play size={12} />
             </button>
+            <div className={styles.antigravityAccountMeta}>
+              {creditsText && <span className={styles.antigravityCredits} title={creditsText}>{creditsText}</span>}
+              <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} refreshAt={account.quota?.last_updated} createdAt={account.created_at} formatDate={formatDate} />
+            </div>
           </div>
         )
       })
@@ -3389,6 +3403,8 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
     items.map((account) => {
       const isCurrent = currentAccount?.id === account.id
       const tierBadge = getAntigravityTierBadge(account.quota)
+      const accountTags = renderAccountTags(account)
+      const accountNote = account.notes?.trim()
       const availableCreditsDisplay = getAvailableAICreditsDisplay(account)
       const isForbidden = Boolean(account.quota?.is_forbidden)
       const quotaError = account.quota_error
@@ -3506,6 +3522,14 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
                   )
                 })()}
               </div>
+              {(accountTags || accountNote) && (
+                <div className="antigravity-account-list-metadata">
+                  {accountTags}
+                  {accountNote && (
+                    <span className="antigravity-account-list-note" title={accountNote}>{accountNote}</span>
+                  )}
+                </div>
+              )}
               <div className="account-sub-line">
                 <span className={`tier-badge ${tierBadge.className}`}>
                   {tierBadge.label}
@@ -3557,11 +3581,11 @@ export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
                   {renderCustomQuotaSection(account, true)}
                 </>
               )}
-              <div className="quota-credits-field">
+              {availableCreditsDisplay !== '' && <div className="quota-credits-field">
                 <span className="quota-credits-label">
                   {t('common.shared.credits.availableAiCredits', 'Available AI Credits')}: {availableCreditsDisplay}
                 </span>
-              </div>
+              </div>}
             </div>
           </td>
           <td>

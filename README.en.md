@@ -15,6 +15,8 @@ A **universal AI IDE account management tool**, currently supporting **Antigravi
 
 **WorkBuddy AI** (macOS and Windows) supports browser sign-in, import from the desktop app or JSON, credit balance, and desktop account switching.
 
+**T3 Code** offers one overview for linked provider accounts. Add, remove, or set a default account and check its subscription and available quota. When T3 Code is running, the composer can show the current account's quota.
+
 **Languages**: Supports 18 languages
 
 🇺🇸 English · 🇨🇳 简体中文 · 繁體中文 · 🇯🇵 日本語 · 🇩🇪 Deutsch · 🇪🇸 Español · 🇫🇷 Français · 🇮🇹 Italiano · 🇰🇷 한국어 · 🇧🇷 Português · 🇷🇺 Русский · 🇹🇷 Türkçe · 🇵🇱 Polski · 🇨🇿 Čeština · 🇸🇦 العربية · 🇻🇳 Tiếng Việt · 🇮🇩 Bahasa Indonesia
@@ -179,6 +181,7 @@ Manage Cursor instances with isolated profiles and lifecycle controls.
 ### 8. Grok CLI Account Management
 
 - **OAuth Authorization**: Supports xAI's official OIDC device flow and saves the account after browser verification completes
+- **Use with the Codex API service**: Authorize the account from **Grok CLI**, then open **Codex → API Service → Add Account**. Filter by **Grok**, select the account, and save. Cockpit creates a provider entry bound to the Grok account and prepares its xAI credentials for the service.
 - **API Keys and Third-Party Endpoints**: Supports official xAI API keys plus OpenAI-compatible third-party `Base URL` and model IDs; configuration is written to an account-specific `config.toml`, while the key is injected only into the corresponding CLI process at launch
 - **Import and Redacted Export**: Imports official credentials from the default `~/.grok/auth.json` or supplied JSON; account-page exports and generic account backups omit access/refresh tokens, cannot restore a sign-in, and require a separate official `auth.json` import when migrating
 - **Real Account Switching**: Writes the selected account to the default `~/.grok/auth.json` in Grok CLI's official registry format while preserving other registry scopes in the file
@@ -389,10 +392,13 @@ Notes:
 Go to [GitHub Releases](https://github.com/jlcodes99/cockpit-tools/releases) to download the package for your system:
 
 *   **macOS**: `.dmg` (Apple Silicon & Intel)
-*   **Windows**: `.msi` (Recommended), `.exe`, or `x64-portable.zip` (extract and run)
+*   **Windows x64**: `_x64_en-US.msi` (recommended), `_x64-setup.exe`, or `x64-portable.zip` (extract and run)
+*   **Windows ARM64**: `_arm64-setup.exe`
 
 Extract the Windows portable archive and run the included `Cockpit Tools.exe` (or the bundled main executable). Windows 10/11 with the Microsoft Edge WebView2 Runtime is required. Accounts and settings remain in the current Windows user's data directory and are not moved with the ZIP folder.
-*   **Linux**: `.deb` (Debian/Ubuntu), `.rpm`, or `.AppImage` (Universal)
+*   **Linux**: `.deb` (Debian/Ubuntu), `.rpm`, or `.AppImage`
+
+Ubuntu 20.04 cannot install the current `.deb` because its repositories lack `libwebkit2gtk-4.1-0`. The current x64 AppImage binary requires glibc 2.34, and Ubuntu 20.04 provides glibc 2.31. Use Ubuntu 24.04 LTS. See the [Ubuntu 24.04 build guide](docs/build-wsl2-ubuntu24.md) for building from source.
 
 ### Option B: Install with Homebrew (macOS)
 
@@ -458,17 +464,44 @@ npm run tauri dev
 npm run tauri build
 ```
 
+### Command line
+
+Download `cockpit-cli_<version>_linux_<architecture>.tar.gz` from a [GitHub Release](https://github.com/jlcodes99/cockpit-tools/releases) with CLI assets. Choose `x86_64` or `aarch64`, extract the archive, and run `./cockpit-cli list codex --json`. Release builds use Ubuntu 22.04 (x86_64) and Ubuntu 24.04 (aarch64). The CLI requires the system OpenSSL 3 runtime and runs without a desktop environment.
+
+You can also run it from source. Scripts can read JSON from stdout with `--json` and check the nonzero exit code and stderr on failure.
+
+```bash
+cargo run --locked --package cockpit-cli -- list codex --json
+cargo run --locked --package cockpit-cli -- switch codex "your-account-id" --json
+cargo run --locked --package cockpit-cli -- switch cursor "your-account-id" --json
+```
+
+#### Account automation
+
+Run these commands as the same user on the machine running a Cockpit Tools desktop app with a matching automation protocol version. If you use a development profile or custom data directory, point the CLI at that same configuration. The Codex API Service can stay off.
+
+```bash
+cockpit-cli account platforms --json
+cockpit-cli account list codex --json
+cockpit-cli account quota codex "account-id" --json
+cockpit-cli account quota codex "account-id" --refresh --json
+cockpit-cli account switch cursor "account-id" --json
+cockpit-cli api-service members --json
+cockpit-cli api-service add "codex-account-id" --json
+cockpit-cli api-service remove "service-member-account-id" --json
+```
+
+- `account platforms` lists all platform IDs. `account list` returns account IDs, display details, original plan names, and tags. Use an exact account ID from the selected platform for quota and switching.
+- `account quota` reads saved quota data. Use `--refresh` for accounts that support live refresh. The response has a `quota.status` of `available`, `stale`, `failed`, or `unavailable`. The fields in `quota.data` depend on the platform.
+- `account switch` runs the platform's default-client switch, which may start or restart that client. For Codex and Antigravity Desktop, the automation command applies credentials without launching. Grok returns `account_profile_prepared` when it prepares an isolated account directory. Check `warnings` or the error code for issues with follow-up operations.
+- `api-service members` returns the global member list with member and source IDs, routing mode, and paused status. `add` adds saved Codex accounts under the existing local access rules and reports added IDs and skip reasons. `remove` takes the member's `accountId`, reports the IDs it removed, and keeps the saved accounts.
+- The new commands write JSON to stdout. Use `--json` for compact, single-line output. Failures use a nonzero exit code and stderr. The original top-level `list` and `switch` retain their existing standalone platform support.
+
 ---
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=jlcodes99/cockpit-tools&type=Date)](https://star-history.com/#jlcodes99/cockpit-tools&Date)
-
----
-
-## Community
-
-Newly created Telegram chat group: [Join the group](https://t.me/+Y8gMv4SlZUU2MWY1)
 
 ---
 
